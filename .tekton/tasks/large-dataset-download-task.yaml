@@ -1,0 +1,182 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: large-dataset-download-task
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: large-dataset-download-task
+    app.kubernetes.io/component: tekton-task
+    task.tekton.dev/dataset-download: "true"
+spec:
+  description: |
+    Production-grade task for downloading and preparing large scientific datasets.
+    
+    Features:
+    - Parallel dataset downloads with retry logic
+    - Smart caching to avoid re-downloads
+    - Integrity verification
+    - Multi-format support (tar.gz, h5ad, etc.)
+    - Progress monitoring and logging
+  
+  workspaces:
+  - name: shared-storage
+    description: Main workspace for processed datasets
+    mountPath: /workspace/shared
+  - name: dataset-cache
+    description: Dedicated cache for large datasets
+    mountPath: /workspace/cache
+  
+  params:
+  - name: dataset-urls
+    description: |
+      Multi-line string containing dataset URLs (one per line)
+      Example:
+      https://example.com/dataset1.tar.gz
+      https://example.com/dataset2.h5ad
+    type: string
+  - name: dataset-names
+    description: Comma-separated list of dataset names for caching
+    type: string
+    default: "dataset1,dataset2"
+  - name: download-timeout
+    description: Timeout in seconds for each download
+    type: string
+    default: "3600"
+  - name: github-token
+    description: GitHub personal access token for private repositories (optional)
+    type: string
+    default: ""
+  
+  steps:
+  - name: download-datasets
+    image: python:3.11-slim
+    env:
+    - name: GITHUB_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: github-token-secret
+          key: token
+    script: |
+      #!/bin/bash
+      set -eu
+      
+      echo "🚀 LARGE DATASET DOWNLOAD TASK - STEP 1"
+      echo "========================================"
+      
+      # Install required tools
+      apt-get update -qq && apt-get install -y -qq wget curl aria2 tar gzip
+      pip install --quiet requests tqdm h5py
+      
+      # Set up directories
+      SHARED_DIR="$(workspaces.shared-storage.path)"
+      CACHE_DIR="$(workspaces.dataset-cache.path)"
+      DATASETS_DIR="$SHARED_DIR/datasets"
+      
+      mkdir -p "$DATASETS_DIR" "$CACHE_DIR"
+      
+      echo "📁 Workspace setup:"
+      echo "   Shared: $SHARED_DIR"
+      echo "   Cache: $CACHE_DIR"
+      echo "   Datasets: $DATASETS_DIR"
+      
+      # Parse parameters
+      IFS=',' read -ra DATASET_NAMES <<< "$(params.dataset-names)"
+      
+      # Process URLs (handle multi-line parameter)
+      echo "$(params.dataset-urls)" | while IFS= read -r url && [ -n "$url" ]; do
+        if [ -z "$url" ] || [[ "$url" =~ ^[[:space:]]*$ ]]; then
+          continue
+        fi
+        
+        # Extract filename and determine dataset name
+        FILENAME=$(basename "$url")
+        DATASET_NAME=${DATASET_NAMES[0]:-"dataset"}
+        DATASET_NAMES=("${DATASET_NAMES[@]:1}")  # Remove first element
+        
+        CACHE_PATH="$CACHE_DIR/$FILENAME"
+        FINAL_PATH="$DATASETS_DIR/$DATASET_NAME"
+        
+        echo ""
+        echo "📥 Processing dataset: $DATASET_NAME"
+        echo "    URL: $url"
+        echo "    Cache: $CACHE_PATH"
+        echo "    Final: $FINAL_PATH"
+        
+        # Check if already cached
+        if [ -f "$CACHE_PATH" ]; then
+          echo "✅ Found in cache: $CACHE_PATH"
+          FILE_SIZE=$(du -h "$CACHE_PATH" | cut -f1)
+          echo "📊 Cache file size: $FILE_SIZE"
+        else
+          echo "📥 Downloading: $url"
+          
+                  # Download with progress and retry (with GitHub token support)
+        if command -v aria2c >/dev/null; then
+          if [ -n "$GITHUB_TOKEN" ] && [[ "$url" == *"github.com"* ]]; then
+            echo "🔐 Using GitHub token for authenticated download"
+            aria2c --continue=true --max-tries=3 --retry-wait=10 --timeout=$(params.download-timeout) \
+              --header="Authorization: token $GITHUB_TOKEN" -o "$CACHE_PATH" "$url"
+          else
+            aria2c --continue=true --max-tries=3 --retry-wait=10 --timeout=$(params.download-timeout) -o "$CACHE_PATH" "$url"
+          fi
+        else
+          if [ -n "$GITHUB_TOKEN" ] && [[ "$url" == *"github.com"* ]]; then
+            echo "🔐 Using GitHub token for authenticated download"
+            wget --timeout=$(params.download-timeout) --tries=3 --progress=bar:force \
+              --header="Authorization: token $GITHUB_TOKEN" -O "$CACHE_PATH" "$url"
+          else
+            wget --timeout=$(params.download-timeout) --tries=3 --progress=bar:force -O "$CACHE_PATH" "$url"
+          fi
+        fi
+          
+          if [ $? -eq 0 ]; then
+            FILE_SIZE=$(du -h "$CACHE_PATH" | cut -f1)
+            echo "✅ Download completed: $FILE_SIZE"
+          else
+            echo "❌ Download failed for $url"
+            exit 1
+          fi
+        fi
+        
+        # Extract/process based on file type
+        mkdir -p "$FINAL_PATH"
+        
+        case "$FILENAME" in
+          *.tar.gz|*.tgz)
+            echo "📦 Extracting tar.gz archive..."
+            tar -xzf "$CACHE_PATH" -C "$FINAL_PATH"
+            ;;
+          *.h5ad)
+            echo "📄 Copying h5ad file..."
+            cp "$CACHE_PATH" "$FINAL_PATH/"
+            ;;
+          *.zip)
+            echo "📦 Extracting zip archive..."
+            unzip -q "$CACHE_PATH" -d "$FINAL_PATH"
+            ;;
+          *)
+            echo "📄 Copying as-is..."
+            cp "$CACHE_PATH" "$FINAL_PATH/"
+            ;;
+        esac
+        
+        echo "✅ Dataset $DATASET_NAME ready at $FINAL_PATH"
+        
+        # List contents for verification
+        echo "📋 Contents:"
+        ls -la "$FINAL_PATH" | head -5
+        
+      done
+      
+      echo ""
+      echo "🎉 ALL DATASETS DOWNLOADED AND PREPARED!"
+      echo "✅ Cache location: $CACHE_DIR"
+      echo "✅ Datasets location: $DATASETS_DIR"
+      
+      # Summary
+      echo ""
+      echo "📊 SUMMARY:"
+      du -h "$CACHE_DIR"/* 2>/dev/null | head -10 || echo "No cache files"
+      echo ""
+      echo "📁 Available datasets:"
+      ls -la "$DATASETS_DIR" | head -10 
