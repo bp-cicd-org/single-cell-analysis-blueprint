@@ -1,0 +1,376 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gpu-notebook-executor-task
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: gpu-notebook-executor-task
+    app.kubernetes.io/component: tekton-task
+    app.kubernetes.io/version: "1.0.0"
+    task.tekton.dev/gpu-enabled: "true"
+spec:
+  description: |
+    Universal GPU-enabled notebook executor for RAPIDS SingleCell Analysis.
+    
+    Features:
+    - Parameter-driven execution for any notebook
+    - GPU resource verification and allocation
+    - Dependency checking and environment setup
+    - Comprehensive logging and monitoring
+    - Results validation and artifact management
+    
+  params:
+  - name: notebook-name
+    description: Name of the notebook to execute (without .ipynb extension)
+    type: string
+  - name: notebook-path
+    description: Relative path to the notebook from repository root
+    type: string
+    default: "notebooks"
+  - name: execution-timeout
+    description: Maximum execution time in seconds
+    type: string
+    default: "7200"
+  - name: min-gpu-memory-gb
+    description: Minimum required GPU memory in GB
+    type: string
+    default: "24"
+  - name: max-retries
+    description: Maximum number of retry attempts on failure
+    type: string
+    default: "1"
+  - name: cleanup-kernel
+    description: Whether to cleanup jupyter kernel after execution
+    type: string
+    default: "true"
+  - name: save-outputs
+    description: Whether to save notebook outputs
+    type: string
+    default: "true"
+  - name: dependency-notebooks
+    description: Comma-separated list of notebooks this one depends on
+    type: string
+    default: ""
+  - name: pipeline-run-name
+    description: Name of the current pipeline run for tracking
+    type: string
+    default: "unknown-run"
+    
+  workspaces:
+  - name: shared-storage
+    description: Shared storage for notebooks, data, and outputs
+    mountPath: /workspace/shared
+    
+  results:
+  - name: execution-status
+    description: Status of notebook execution (success/failed/skipped)
+  - name: execution-time
+    description: Total execution time in seconds
+  - name: output-notebook-path
+    description: Path to the executed notebook
+  - name: gpu-memory-used
+    description: Peak GPU memory usage during execution
+  - name: error-message
+    description: Error message if execution failed
+    
+  steps:
+  
+  # Step 1: Environment and GPU Validation
+  - name: validate-environment
+    image: nvcr.io/nvidia/rapidsai/notebooks:25.04-cuda12.8-py3.12
+    securityContext:
+      runAsUser: 0
+      allowPrivilegeEscalation: false
+    env:
+    - name: WORKSPACE_PATH
+      value: $(workspaces.shared-storage.path)
+    - name: NOTEBOOK_NAME
+      value: $(params.notebook-name)
+    - name: NOTEBOOK_PATH
+      value: $(params.notebook-path)
+    - name: MIN_GPU_MEMORY_GB
+      value: $(params.min-gpu-memory-gb)
+    - name: DEPENDENCY_NOTEBOOKS
+      value: $(params.dependency-notebooks)
+    script: |
+      #!/bin/bash
+      set -eu
+      
+      echo "🔍 GPU Notebook Executor - Environment Validation"
+      echo "================================================"
+      echo "Notebook: ${NOTEBOOK_NAME}"
+      echo "Min GPU Memory: ${MIN_GPU_MEMORY_GB}GB"
+      echo "Dependencies: ${DEPENDENCY_NOTEBOOKS}"
+      
+      cd "${WORKSPACE_PATH}"
+      
+      # Check GPU availability
+      echo "🖥️  Checking GPU availability..."
+      if ! nvidia-smi >/dev/null 2>&1; then
+        echo "❌ ERROR: NVIDIA GPU not available or drivers not installed"
+        echo -n "failed" > "$(results.execution-status.path)"
+        echo -n "GPU not available" > "$(results.error-message.path)"
+        exit 1
+      fi
+      
+      # Get GPU memory information
+      GPU_MEMORY_TOTAL=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
+      GPU_MEMORY_FREE=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1)
+      GPU_MEMORY_TOTAL_GB=$((GPU_MEMORY_TOTAL / 1024))
+      GPU_MEMORY_FREE_GB=$((GPU_MEMORY_FREE / 1024))
+      
+      echo "📊 GPU Memory Status:"
+      echo "   Total: ${GPU_MEMORY_TOTAL_GB}GB"
+      echo "   Free: ${GPU_MEMORY_FREE_GB}GB"
+      echo "   Required: ${MIN_GPU_MEMORY_GB}GB"
+      
+      # Check if we have enough GPU memory
+      if [ "${GPU_MEMORY_FREE_GB}" -lt "${MIN_GPU_MEMORY_GB}" ]; then
+        echo "❌ ERROR: Insufficient GPU memory"
+        echo "   Available: ${GPU_MEMORY_FREE_GB}GB"
+        echo "   Required: ${MIN_GPU_MEMORY_GB}GB"
+        echo -n "skipped" > "$(results.execution-status.path)"
+        echo -n "Insufficient GPU memory" > "$(results.error-message.path)"
+        exit 0
+      fi
+      
+      # Check notebook file exists
+      NOTEBOOK_FILE="${WORKSPACE_PATH}/single-cell-analysis-blueprint/${NOTEBOOK_PATH}/${NOTEBOOK_NAME}.ipynb"
+      if [ ! -f "${NOTEBOOK_FILE}" ]; then
+        echo "❌ ERROR: Notebook file not found: ${NOTEBOOK_FILE}"
+        echo -n "failed" > "$(results.execution-status.path)"
+        echo -n "Notebook file not found" > "$(results.error-message.path)"
+        exit 1
+      fi
+      
+      # Check dependencies (if any)
+      if [ -n "${DEPENDENCY_NOTEBOOKS}" ]; then
+        echo "🔗 Checking dependencies..."
+        IFS=',' read -ra DEPS <<< "${DEPENDENCY_NOTEBOOKS}"
+        for dep in "${DEPS[@]}"; do
+          DEP_OUTPUT="${WORKSPACE_PATH}/outputs/${dep}.executed.ipynb"
+          if [ ! -f "${DEP_OUTPUT}" ]; then
+            echo "❌ ERROR: Dependency not satisfied: ${dep}"
+            echo "   Expected file: ${DEP_OUTPUT}"
+            echo -n "skipped" > "$(results.execution-status.path)"
+            echo -n "Dependency not satisfied: ${dep}" > "$(results.error-message.path)"
+            exit 0
+          fi
+        done
+        echo "✅ All dependencies satisfied"
+      fi
+      
+      echo "✅ Environment validation passed"
+      echo -n "${GPU_MEMORY_FREE_GB}" > /tmp/gpu_memory_available
+      
+  # Step 2: Execute Notebook
+  - name: execute-notebook
+    image: nvcr.io/nvidia/rapidsai/notebooks:25.04-cuda12.8-py3.12
+    securityContext:
+      runAsUser: 0
+      allowPrivilegeEscalation: false
+    env:
+    - name: WORKSPACE_PATH
+      value: $(workspaces.shared-storage.path)
+    - name: NOTEBOOK_NAME
+      value: $(params.notebook-name)
+    - name: NOTEBOOK_PATH
+      value: $(params.notebook-path)
+    - name: EXECUTION_TIMEOUT
+      value: $(params.execution-timeout)
+    - name: SAVE_OUTPUTS
+      value: $(params.save-outputs)
+    - name: PIPELINE_RUN_NAME
+      value: $(params.pipeline-run-name)
+    - name: HOME
+      value: "/root"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+    script: |
+      #!/bin/bash
+      set -eu
+      
+      echo "🚀 Executing Notebook: ${NOTEBOOK_NAME}"
+      echo "======================================"
+      
+      cd "${WORKSPACE_PATH}"
+      
+      # Setup output directories
+      mkdir -p outputs logs artifacts
+      
+      # Set paths
+      NOTEBOOK_FILE="single-cell-analysis-blueprint/${NOTEBOOK_PATH}/${NOTEBOOK_NAME}.ipynb"
+      OUTPUT_NOTEBOOK="outputs/${NOTEBOOK_NAME}.executed.ipynb"
+      OUTPUT_HTML="outputs/${NOTEBOOK_NAME}.html"
+      LOG_FILE="logs/${NOTEBOOK_NAME}.execution.log"
+      
+      echo "📝 Notebook paths:"
+      echo "   Input:  ${NOTEBOOK_FILE}"
+      echo "   Output: ${OUTPUT_NOTEBOOK}"
+      echo "   HTML:   ${OUTPUT_HTML}"
+      echo "   Log:    ${LOG_FILE}"
+      
+      # Record start time
+      START_TIME=$(date +%s)
+      
+      # Install/update required packages
+      echo "📦 Installing dependencies..."
+      pip install --quiet --no-cache-dir --upgrade \
+        jupyter papermill nbconvert \
+        rapids-singlecell scanpy anndata \
+        matplotlib seaborn plotly \
+        scikit-learn umap-learn \
+        2>&1 | tee -a "${LOG_FILE}"
+      
+      # Clear any existing outputs
+      echo "🧹 Clearing previous outputs..."
+      jupyter nbconvert --clear-output --inplace "${NOTEBOOK_FILE}" 2>&1 | tee -a "${LOG_FILE}"
+      
+      # Monitor GPU memory before execution
+      GPU_MEMORY_BEFORE=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
+      echo "📊 GPU memory before execution: $((GPU_MEMORY_BEFORE / 1024))GB"
+      
+      # Execute notebook with papermill
+      echo "⚡ Starting notebook execution..."
+      echo "   Timeout: ${EXECUTION_TIMEOUT} seconds"
+      
+      if timeout "${EXECUTION_TIMEOUT}" papermill \
+          "${NOTEBOOK_FILE}" \
+          "${OUTPUT_NOTEBOOK}" \
+          --progress-bar \
+          --log-output \
+          --log-level INFO \
+          2>&1 | tee -a "${LOG_FILE}"; then
+        
+        # Record end time
+        END_TIME=$(date +%s)
+        EXECUTION_TIME=$((END_TIME - START_TIME))
+        
+        # Monitor GPU memory after execution
+        GPU_MEMORY_AFTER=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
+        GPU_MEMORY_PEAK=$([ "${GPU_MEMORY_AFTER}" -gt "${GPU_MEMORY_BEFORE}" ] && echo "${GPU_MEMORY_AFTER}" || echo "${GPU_MEMORY_BEFORE}")
+        
+        echo "✅ Notebook execution completed successfully!"
+        echo "   Execution time: ${EXECUTION_TIME} seconds"
+        echo "   Peak GPU memory: $((GPU_MEMORY_PEAK / 1024))GB"
+        
+        # Convert to HTML if requested
+        if [ "${SAVE_OUTPUTS}" = "true" ]; then
+          echo "📄 Converting to HTML..."
+          jupyter nbconvert \
+            --to html \
+            --output-dir outputs \
+            "${OUTPUT_NOTEBOOK}" \
+            2>&1 | tee -a "${LOG_FILE}"
+        fi
+        
+        # Save results
+        echo -n "success" > "$(results.execution-status.path)"
+        echo -n "${EXECUTION_TIME}" > "$(results.execution-time.path)"
+        echo -n "${OUTPUT_NOTEBOOK}" > "$(results.output-notebook-path.path)"
+        echo -n "$((GPU_MEMORY_PEAK / 1024))" > "$(results.gpu-memory-used.path)"
+        echo -n "" > "$(results.error-message.path)"
+        
+      else
+        # Execution failed
+        END_TIME=$(date +%s)
+        EXECUTION_TIME=$((END_TIME - START_TIME))
+        
+        echo "❌ Notebook execution failed!"
+        echo "   Execution time: ${EXECUTION_TIME} seconds"
+        
+        # Extract error from log
+        ERROR_MSG=$(tail -20 "${LOG_FILE}" | grep -i "error\|exception\|traceback" | head -1 || echo "Unknown error")
+        
+        echo -n "failed" > "$(results.execution-status.path)"
+        echo -n "${EXECUTION_TIME}" > "$(results.execution-time.path)"
+        echo -n "" > "$(results.output-notebook-path.path)"
+        echo -n "0" > "$(results.gpu-memory-used.path)"
+        echo -n "${ERROR_MSG}" > "$(results.error-message.path)"
+        
+        exit 1
+      fi
+      
+  # Step 3: Cleanup and Validation
+  - name: cleanup-and-validate
+    image: nvcr.io/nvidia/rapidsai/notebooks:25.04-cuda12.8-py3.12
+    securityContext:
+      runAsUser: 0
+      allowPrivilegeEscalation: false
+    env:
+    - name: WORKSPACE_PATH
+      value: $(workspaces.shared-storage.path)
+    - name: NOTEBOOK_NAME
+      value: $(params.notebook-name)
+    - name: CLEANUP_KERNEL
+      value: $(params.cleanup-kernel)
+    script: |
+      #!/bin/bash
+      set -eu
+      
+      echo "🧹 Cleanup and Validation"
+      echo "========================"
+      
+      cd "${WORKSPACE_PATH}"
+      
+      # Cleanup Jupyter kernels if requested
+      if [ "${CLEANUP_KERNEL}" = "true" ]; then
+        echo "🔄 Cleaning up Jupyter kernels..."
+        # Kill any running jupyter processes
+        pkill -f jupyter || echo "No jupyter processes to kill"
+        
+        # Clear GPU memory cache
+        python3 -c "
+        import gc
+        try:
+          import torch
+          torch.cuda.empty_cache()
+          print('PyTorch GPU cache cleared')
+        except ImportError:
+          pass
+        try:
+          import cupy
+          cupy.cuda.runtime.deviceSynchronize()
+          cupy.fuse.clear_memo()
+          print('CuPy GPU cache cleared')
+        except ImportError:
+          pass
+        gc.collect()
+        print('Python garbage collection completed')
+        " || echo "GPU cache cleanup completed with warnings"
+      fi
+      
+      # Validate output files
+      OUTPUT_NOTEBOOK="outputs/${NOTEBOOK_NAME}.executed.ipynb"
+      if [ -f "${OUTPUT_NOTEBOOK}" ]; then
+        echo "✅ Output notebook validated: ${OUTPUT_NOTEBOOK}"
+        
+        # Check notebook size
+        NOTEBOOK_SIZE=$(du -h "${OUTPUT_NOTEBOOK}" | cut -f1)
+        echo "   Size: ${NOTEBOOK_SIZE}"
+        
+        # Check if notebook has outputs
+        OUTPUT_COUNT=$(python3 -c "
+        import json
+        with open('${OUTPUT_NOTEBOOK}', 'r') as f:
+          nb = json.load(f)
+        count = sum(1 for cell in nb['cells'] if cell.get('outputs'))
+        print(count)
+        " || echo "0")
+        echo "   Cells with outputs: ${OUTPUT_COUNT}"
+        
+        if [ "${OUTPUT_COUNT}" -gt "0" ]; then
+          echo "✅ Notebook contains execution outputs"
+        else
+          echo "⚠️  Warning: Notebook may not have executed properly (no outputs)"
+        fi
+        
+      else
+        echo "❌ Warning: Output notebook not found"
+      fi
+      
+      # Final GPU memory check
+      GPU_MEMORY_FINAL=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
+      echo "📊 Final GPU memory usage: $((GPU_MEMORY_FINAL / 1024))GB"
+      
+      echo "✅ Cleanup and validation completed"

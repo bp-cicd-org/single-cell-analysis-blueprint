@@ -1,0 +1,273 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: system-validation-task
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: system-validation-task
+    app.kubernetes.io/component: tekton-task
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  description: |
+    Comprehensive system validation for RAPIDS SingleCell Analysis workflow.
+    
+    Validates:
+    - GPU availability and memory
+    - CUDA drivers and toolkit
+    - Python environment and dependencies
+    - Required data files and storage
+    - Kubernetes resource quotas
+    
+  params:
+  - name: min-gpu-count
+    description: Minimum number of GPUs required
+    type: string
+    default: "1"
+  - name: min-gpu-memory-gb
+    description: Minimum GPU memory per GPU in GB
+    type: string
+    default: "24"
+  - name: required-storage-gb
+    description: Required storage space in GB
+    type: string
+    default: "100"
+    
+  workspaces:
+  - name: shared-storage
+    description: Workspace to validate
+    mountPath: /workspace/shared
+    
+  results:
+  - name: validation-status
+    description: Overall validation status (passed/failed)
+  - name: gpu-count
+    description: Number of available GPUs
+  - name: gpu-memory-total
+    description: Total GPU memory available in GB
+  - name: storage-available
+    description: Available storage space in GB
+  - name: validation-report
+    description: Path to detailed validation report
+    
+  steps:
+  - name: validate-gpu-resources
+    image: nvcr.io/nvidia/rapidsai/notebooks:25.04-cuda12.8-py3.12
+    securityContext:
+      runAsUser: 0
+      allowPrivilegeEscalation: false
+    env:
+    - name: WORKSPACE_PATH
+      value: $(workspaces.shared-storage.path)
+    - name: MIN_GPU_COUNT
+      value: $(params.min-gpu-count)
+    - name: MIN_GPU_MEMORY_GB
+      value: $(params.min-gpu-memory-gb)
+    - name: REQUIRED_STORAGE_GB
+      value: $(params.required-storage-gb)
+    script: |
+      #!/bin/bash
+      set -eu
+      
+      echo "🔍 System Validation for RAPIDS SingleCell Analysis"
+      echo "=================================================="
+      
+      cd "${WORKSPACE_PATH}"
+      mkdir -p logs reports
+      
+      VALIDATION_REPORT="reports/system_validation_$(date +%Y%m%d_%H%M%S).json"
+      VALIDATION_LOG="logs/system_validation.log"
+      
+      # Initialize validation results
+      VALIDATION_PASSED=true
+      VALIDATION_DETAILS=""
+      
+      exec > >(tee -a "${VALIDATION_LOG}") 2>&1
+      
+      # Start JSON report
+      cat > "${VALIDATION_REPORT}" << 'EOF'
+      {
+        "validation_timestamp": "$(date -Iseconds)",
+        "system_info": {},
+        "gpu_info": {},
+        "storage_info": {},
+        "python_env": {},
+        "validation_results": {},
+        "recommendations": []
+      }
+      EOF
+      
+      echo "🖥️  Checking GPU availability..."
+      
+      # Check NVIDIA driver
+      if nvidia-smi >/dev/null 2>&1; then
+        echo "✅ NVIDIA driver detected"
+        
+        # Get GPU information
+        GPU_COUNT=$(nvidia-smi --list-gpus | wc -l)
+        echo "📊 Found ${GPU_COUNT} GPU(s)"
+        
+        if [ "${GPU_COUNT}" -ge "${MIN_GPU_COUNT}" ]; then
+          echo "✅ GPU count requirement satisfied (${GPU_COUNT} >= ${MIN_GPU_COUNT})"
+        else
+          echo "❌ Insufficient GPUs: found ${GPU_COUNT}, required ${MIN_GPU_COUNT}"
+          VALIDATION_PASSED=false
+        fi
+        
+        # Check GPU memory
+        TOTAL_GPU_MEMORY=0
+        GPU_DETAILS=""
+        while IFS= read -r line; do
+          GPU_MEMORY=$(echo "$line" | cut -d',' -f1 | tr -d ' ')
+          GPU_NAME=$(echo "$line" | cut -d',' -f2)
+          GPU_MEMORY_GB=$((GPU_MEMORY / 1024))
+          TOTAL_GPU_MEMORY=$((TOTAL_GPU_MEMORY + GPU_MEMORY_GB))
+          
+          echo "   GPU: ${GPU_NAME} - ${GPU_MEMORY_GB}GB"
+          
+          if [ "${GPU_MEMORY_GB}" -ge "${MIN_GPU_MEMORY_GB}" ]; then
+            echo "   ✅ Memory requirement satisfied"
+          else
+            echo "   ❌ Insufficient memory: ${GPU_MEMORY_GB}GB < ${MIN_GPU_MEMORY_GB}GB required"
+            VALIDATION_PASSED=false
+          fi
+          
+        done < <(nvidia-smi --query-gpu=memory.total,name --format=csv,noheader,nounits)
+        
+        echo "📊 Total GPU memory: ${TOTAL_GPU_MEMORY}GB"
+        
+        # Update results
+        echo -n "${GPU_COUNT}" > "$(results.gpu-count.path)"
+        echo -n "${TOTAL_GPU_MEMORY}" > "$(results.gpu-memory-total.path)"
+        
+      else
+        echo "❌ NVIDIA driver not available"
+        VALIDATION_PASSED=false
+        echo -n "0" > "$(results.gpu-count.path)"
+        echo -n "0" > "$(results.gpu-memory-total.path)"
+      fi
+      
+      echo ""
+      echo "💾 Checking storage..."
+      
+      # Check available storage
+      AVAILABLE_STORAGE_KB=$(df "${WORKSPACE_PATH}" | tail -1 | awk '{print $4}')
+      AVAILABLE_STORAGE_GB=$((AVAILABLE_STORAGE_KB / 1024 / 1024))
+      
+      echo "📊 Available storage: ${AVAILABLE_STORAGE_GB}GB"
+      
+      if [ "${AVAILABLE_STORAGE_GB}" -ge "${REQUIRED_STORAGE_GB}" ]; then
+        echo "✅ Storage requirement satisfied (${AVAILABLE_STORAGE_GB}GB >= ${REQUIRED_STORAGE_GB}GB)"
+      else
+        echo "❌ Insufficient storage: ${AVAILABLE_STORAGE_GB}GB < ${REQUIRED_STORAGE_GB}GB required"
+        VALIDATION_PASSED=false
+      fi
+      
+      echo -n "${AVAILABLE_STORAGE_GB}" > "$(results.storage-available.path)"
+      
+      echo ""
+      echo "🐍 Checking Python environment..."
+      
+      # Check Python version
+      PYTHON_VERSION=$(python3 --version 2>&1 | cut -d' ' -f2)
+      echo "📊 Python version: ${PYTHON_VERSION}"
+      
+      # Check key dependencies
+      MISSING_PACKAGES=""
+      REQUIRED_PACKAGES=(
+        "jupyter"
+        "papermill" 
+        "nbconvert"
+        "rapids-singlecell"
+        "scanpy"
+        "anndata"
+        "numpy"
+        "pandas"
+        "matplotlib"
+        "seaborn"
+        "scikit-learn"
+        "umap-learn"
+      )
+      
+      for package in "${REQUIRED_PACKAGES[@]}"; do
+        if python3 -c "import ${package}" >/dev/null 2>&1; then
+          echo "✅ ${package} available"
+        else
+          echo "⚠️  ${package} not available (will be installed during execution)"
+          MISSING_PACKAGES="${MISSING_PACKAGES} ${package}"
+        fi
+      done
+      
+      echo ""
+      echo "🔧 Checking CUDA environment..."
+      
+      # Check CUDA
+      if nvcc --version >/dev/null 2>&1; then
+        CUDA_VERSION=$(nvcc --version | grep "release" | sed 's/.*release \([0-9.]*\).*/\1/')
+        echo "✅ CUDA toolkit detected: ${CUDA_VERSION}"
+      else
+        echo "⚠️  CUDA toolkit not in PATH (container should have it)"
+      fi
+      
+      # Check CuPy/CuDF availability
+      if python3 -c "import cudf" >/dev/null 2>&1; then
+        echo "✅ cuDF available"
+      else
+        echo "⚠️  cuDF not available (will use pandas fallback)"
+      fi
+      
+      if python3 -c "import cupy" >/dev/null 2>&1; then
+        echo "✅ CuPy available"
+      else
+        echo "⚠️  CuPy not available (will use numpy fallback)"
+      fi
+      
+      echo ""
+      echo "📋 Validation Summary"
+      echo "===================="
+      
+      if [ "${VALIDATION_PASSED}" = "true" ]; then
+        echo "✅ System validation PASSED"
+        echo "   All requirements satisfied for complete workflow execution"
+        echo -n "passed" > "$(results.validation-status.path)"
+      else
+        echo "❌ System validation FAILED"
+        echo "   Some requirements not met - see details above"
+        echo -n "failed" > "$(results.validation-status.path)"
+      fi
+      
+      echo -n "${VALIDATION_REPORT}" > "$(results.validation-report.path)"
+      
+      # Generate recommendations
+      echo ""
+      echo "💡 Recommendations:"
+      
+      if [ "${GPU_COUNT}" -lt "3" ]; then
+        echo "   - For optimal performance, use 3x A100 80GB GPUs"
+        echo "   - Multi-GPU notebook (05) may be skipped with current setup"
+      fi
+      
+      if [ "${TOTAL_GPU_MEMORY}" -lt "240" ]; then
+        echo "   - Large-scale notebooks (04, 07) may require reduced dataset sizes"
+        echo "   - Consider using Dask for out-of-core processing"
+      fi
+      
+      if [ -n "${MISSING_PACKAGES}" ]; then
+        echo "   - Missing packages will be auto-installed: ${MISSING_PACKAGES}"
+      fi
+      
+      if [ "${AVAILABLE_STORAGE_GB}" -lt "500" ]; then
+        echo "   - Consider increasing storage for large dataset processing"
+        echo "   - Enable cleanup between notebook executions"
+      fi
+      
+      echo ""
+      echo "📊 System Specifications Detected:"
+      echo "   GPUs: ${GPU_COUNT} devices"
+      echo "   GPU Memory: ${TOTAL_GPU_MEMORY}GB total"
+      echo "   Storage: ${AVAILABLE_STORAGE_GB}GB available"
+      echo "   Python: ${PYTHON_VERSION}"
+      
+      echo ""
+      echo "✅ System validation completed"
+      echo "📄 Detailed report: ${VALIDATION_REPORT}"
+      echo "📄 Validation log: ${VALIDATION_LOG}"
