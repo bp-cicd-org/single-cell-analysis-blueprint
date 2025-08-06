@@ -1,0 +1,37 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: notebook04-dask-pipeline
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: notebook04-dask-pipeline
+    notebook.rapids.ai/id: "04"
+spec:
+  description: |
+    📊 Notebook 04 - Dask Out-of-Core Analysis Pipeline
+    Scale analysis to 11M cells using Dask
+    
+  params:
+  - name: master-run-name
+    type: string
+    default: "standalone-notebook04"
+    
+  workspaces:
+  - name: shared-storage
+    
+  tasks:
+  - name: execute-notebook04
+    taskRef:
+      name: gpu-notebook-executor-task
+    params:
+    - name: notebook-name
+      value: "04_scRNA_analysis_dask_out_of_core"
+    - name: execution-timeout
+      value: "10800"
+    - name: min-gpu-memory-gb
+      value: "48"
+    - name: pipeline-run-name
+      value: $(params.master-run-name)
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage

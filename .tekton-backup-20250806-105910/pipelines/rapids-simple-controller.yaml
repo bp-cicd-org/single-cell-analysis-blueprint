@@ -1,0 +1,237 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: rapids-simple-controller
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: rapids-simple-controller
+    app.kubernetes.io/component: tekton-pipeline
+    app.kubernetes.io/version: "1.0.0"
+    pipeline.tekton.dev/gpu-enabled: "true"
+spec:
+  description: |
+    🎯 RAPIDS SingleCell Analysis - Simplified Sequential Controller
+    Executes all 5 notebooks in sequence for reliable execution
+    
+  params:
+  - name: execution-run-name
+    type: string
+    default: "rapids-execution"
+    description: Unique name for this execution run
+    
+  workspaces:
+  - name: shared-storage
+    description: Shared workspace for all notebooks
+    
+  tasks:
+  
+  # Setup Environment
+  - name: setup-environment
+    taskSpec:
+      params:
+      - name: execution-run-name
+        type: string
+      workspaces:
+      - name: shared-storage
+      steps:
+      - name: setup
+        image: nvcr.io/nvidia/rapidsai/notebooks:25.04-cuda12.8-py3.12
+        securityContext:
+          runAsUser: 0
+        env:
+        - name: EXECUTION_RUN_NAME
+          value: $(params.execution-run-name)
+        script: |
+          #!/bin/bash
+          set -eu
+          
+          echo "🎯 RAPIDS Analysis Setup"
+          echo "======================"
+          echo "Execution Run: ${EXECUTION_RUN_NAME}"
+          echo "Workspace: $(workspaces.shared-storage.path)"
+          
+          cd "$(workspaces.shared-storage.path)"
+          
+          # Create directory structure
+          mkdir -p {outputs,logs,artifacts,final-results}
+          chmod -R 777 .
+          
+          # Install dependencies
+          pip install --quiet --no-cache-dir --upgrade \
+            jupyter papermill nbconvert \
+            rapids-singlecell scanpy anndata \
+            matplotlib seaborn plotly \
+            scikit-learn umap-learn \
+            dask dask-cuda
+          
+          echo "✅ Environment setup completed"
+    params:
+    - name: execution-run-name
+      value: $(params.execution-run-name)
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Clone Repository
+  - name: clone-repository
+    taskRef:
+      name: safe-git-clone
+    params:
+    - name: git-repo-url
+      value: "https://github.com/NVIDIA-AI-Blueprints/single-cell-analysis-blueprint.git"
+    - name: workspace-subdir
+      value: "single-cell-analysis-blueprint"
+    runAfter: ["setup-environment"]
+    workspaces:
+    - name: source-workspace
+      workspace: shared-storage
+      
+  # Notebook 01
+  - name: execute-notebook01
+    taskRef:
+      name: gpu-notebook-executor-task
+    params:
+    - name: notebook-name
+      value: "01_scRNA_analysis_preprocessing"
+    - name: execution-timeout
+      value: "7200"
+    - name: min-gpu-memory-gb
+      value: "24"
+    - name: pipeline-run-name
+      value: $(params.execution-run-name)
+    runAfter: ["clone-repository"]
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Notebook 02
+  - name: execute-notebook02
+    taskRef:
+      name: gpu-notebook-executor-task
+    params:
+    - name: notebook-name
+      value: "02_scRNA_analysis_extended"
+    - name: execution-timeout
+      value: "5400"
+    - name: min-gpu-memory-gb
+      value: "24"
+    - name: dependency-notebooks
+      value: "01_scRNA_analysis_preprocessing"
+    - name: pipeline-run-name
+      value: $(params.execution-run-name)
+    runAfter: ["execute-notebook01"]
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Notebook 03
+  - name: execute-notebook03
+    taskRef:
+      name: gpu-notebook-executor-task
+    params:
+    - name: notebook-name
+      value: "03_scRNA_analysis_with_pearson_residuals"
+    - name: execution-timeout
+      value: "5400"
+    - name: min-gpu-memory-gb
+      value: "24"
+    - name: pipeline-run-name
+      value: $(params.execution-run-name)
+    runAfter: ["execute-notebook02"]
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Notebook 04
+  - name: execute-notebook04
+    taskRef:
+      name: gpu-notebook-executor-task
+    params:
+    - name: notebook-name
+      value: "04_scRNA_analysis_dask_out_of_core"
+    - name: execution-timeout
+      value: "10800"
+    - name: min-gpu-memory-gb
+      value: "48"
+    - name: pipeline-run-name
+      value: $(params.execution-run-name)
+    runAfter: ["execute-notebook03"]
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Notebook 05
+  - name: execute-notebook05
+    taskRef:
+      name: gpu-notebook-executor-task
+    params:
+    - name: notebook-name
+      value: "05_scRNA_analysis_multi_GPU"
+    - name: execution-timeout
+      value: "14400"
+    - name: min-gpu-memory-gb
+      value: "160"
+    - name: pipeline-run-name
+      value: $(params.execution-run-name)
+    runAfter: ["execute-notebook04"]
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Final Results Collection
+  - name: collect-final-results
+    taskSpec:
+      params:
+      - name: execution-run-name
+        type: string
+      workspaces:
+      - name: shared-storage
+      steps:
+      - name: finalize-execution
+        image: nvcr.io/nvidia/rapidsai/notebooks:25.04-cuda12.8-py3.12
+        securityContext:
+          runAsUser: 0
+        env:
+        - name: EXECUTION_RUN_NAME
+          value: $(params.execution-run-name)
+        script: |
+          #!/bin/bash
+          set -eu
+          
+          echo "📊 Collecting Final Results"
+          echo "=========================="
+          
+          cd "$(workspaces.shared-storage.path)"
+          
+          # Generate execution summary
+          cat > final-results/execution-summary.txt << EOF
+          RAPIDS SingleCell Analysis Execution Summary
+          ==========================================
+          Execution Run: ${EXECUTION_RUN_NAME}
+          Strategy: Sequential Execution
+          Completed: $(date)
+          
+          Notebooks Executed:
+          - Notebook 01: Basic Preprocessing
+          - Notebook 02: Extended Analysis  
+          - Notebook 03: Pearson Residuals
+          - Notebook 04: Dask Out-of-Core
+          - Notebook 05: Multi-GPU
+          
+          All 5 notebooks executed successfully!
+          EOF
+          
+          echo "🎉 All notebooks completed successfully!"
+          cat final-results/execution-summary.txt
+          
+          # List all generated outputs
+          echo ""
+          echo "📁 Generated Outputs:"
+          find outputs -name "*.executed.ipynb" -o -name "*.html" | head -10
+    params:
+    - name: execution-run-name
+      value: $(params.execution-run-name)
+    runAfter: ["execute-notebook05"]
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage

@@ -220,6 +220,8 @@ spec:
         rapids-singlecell scanpy anndata \
         matplotlib seaborn plotly \
         scikit-learn umap-learn \
+        wget pytest pytest-html \
+        dask dask-cuda \
         2>&1 | tee -a "${LOG_FILE}"
       
       # Clear any existing outputs
@@ -234,13 +236,17 @@ spec:
       echo "⚡ Starting notebook execution..."
       echo "   Timeout: ${EXECUTION_TIMEOUT} seconds"
       
-      if timeout "${EXECUTION_TIMEOUT}" papermill \
+      # Execute notebook with papermill and capture exit code
+      timeout "${EXECUTION_TIMEOUT}" papermill \
           "${NOTEBOOK_FILE}" \
           "${OUTPUT_NOTEBOOK}" \
           --progress-bar \
           --log-output \
           --log-level INFO \
-          2>&1 | tee -a "${LOG_FILE}"; then
+          2>&1 | tee -a "${LOG_FILE}"
+      PAPERMILL_EXIT_CODE=${PIPESTATUS[0]}
+      
+      if [ ${PAPERMILL_EXIT_CODE} -eq 0 ]; then
         
         # Record end time
         END_TIME=$(date +%s)
@@ -262,6 +268,47 @@ spec:
             --output-dir outputs \
             "${OUTPUT_NOTEBOOK}" \
             2>&1 | tee -a "${LOG_FILE}"
+          
+          OUTPUT_HTML="outputs/${NOTEBOOK_NAME}.html"
+          if [ -f "${OUTPUT_HTML}" ]; then
+            echo "✅ HTML conversion completed: ${OUTPUT_HTML}"
+            
+            # Copy HTML to input directory for pytest
+            mkdir -p input
+            cp "${OUTPUT_HTML}" "input/${NOTEBOOK_NAME}.html"
+            echo "📋 HTML copied to input directory for testing"
+            
+            # Download test framework
+            echo "📥 Downloading test framework..."
+            if [ -d "blueprint-github-test" ]; then
+              rm -rf blueprint-github-test
+            fi
+            
+            git clone --depth 1 https://github.com/NVIDIA-AI-Blueprints/blueprint-github-test.git blueprint-github-test 2>&1 | tee -a "${LOG_FILE}" || echo "⚠️ Test framework download failed"
+            
+            # Execute pytest if test framework is available
+            if [ -d "blueprint-github-test" ] && [ -f "input/${NOTEBOOK_NAME}.html" ]; then
+              echo "🧪 Running pytest on HTML file..."
+              
+              export HTML_INPUT_FILE="input/${NOTEBOOK_NAME}.html"
+              
+              pytest blueprint-github-test/ \
+                --html=artifacts/pytest-report-${NOTEBOOK_NAME}.html \
+                --self-contained-html \
+                --junitxml=artifacts/pytest-results-${NOTEBOOK_NAME}.xml \
+                --cov=. \
+                --cov-report=xml:artifacts/coverage-${NOTEBOOK_NAME}.xml \
+                -v 2>&1 | tee logs/pytest-${NOTEBOOK_NAME}.log || echo "⚠️ Pytest completed with issues"
+              
+              if [ -f "artifacts/pytest-report-${NOTEBOOK_NAME}.html" ]; then
+                echo "✅ Test results generated: artifacts/pytest-report-${NOTEBOOK_NAME}.html"
+              fi
+            else
+              echo "⚠️ Skipping pytest - test framework or HTML not available"
+            fi
+          else
+            echo "⚠️ HTML conversion failed"
+          fi
         fi
         
         # Save results

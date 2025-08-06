@@ -1,0 +1,154 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: notebook-pca-fix-task
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: notebook-pca-fix-task
+    app.kubernetes.io/component: tekton-task
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  description: |
+    Fixes PCA compatibility issues in notebooks.
+    Adds compatibility code before PCA plotting functions.
+    
+  params:
+  - name: notebook-path
+    type: string
+    description: Path to the notebook to fix
+    
+  workspaces:
+  - name: shared-storage
+    description: Workspace containing the notebook
+    
+  steps:
+  - name: fix-pca-compatibility
+    image: nvcr.io/nvidia/rapidsai/notebooks:25.04-cuda12.8-py3.12
+    securityContext:
+      runAsUser: 0
+    env:
+    - name: NOTEBOOK_PATH
+      value: $(params.notebook-path)
+    script: |
+      #!/bin/bash
+      set -eu
+      
+      echo "🔧 Fixing PCA Compatibility in Notebook"
+      echo "======================================"
+      
+      cd "$(workspaces.shared-storage.path)"
+      
+      # Install required packages
+      pip install --quiet --no-cache-dir jupyter nbformat
+      
+      echo "Notebook path: ${NOTEBOOK_PATH}"
+      
+      if [ ! -f "${NOTEBOOK_PATH}" ]; then
+        echo "❌ Notebook not found: ${NOTEBOOK_PATH}"
+        exit 1
+      fi
+      
+      # Create Python script to fix PCA compatibility
+      cat > fix_pca.py << 'EOF'
+import json
+import sys
+
+def fix_pca_compatibility(notebook_path):
+    """Fix PCA compatibility between rapids-singlecell and scanpy"""
+    
+    with open(notebook_path, 'r') as f:
+        nb = json.load(f)
+    
+    pca_fix_code = '''
+# PCA Compatibility Fix for rapids-singlecell and scanpy
+try:
+    # Check if PCA was computed with rapids-singlecell
+    if 'X_pca' in adata.obsm and 'pca' not in adata.uns:
+        print("⚠️ Detected rapids-singlecell PCA format, adding scanpy compatibility...")
+        
+        # Create scanpy-compatible PCA metadata
+        if 'X_pca' in adata.obsm:
+            n_pcs = adata.obsm['X_pca'].shape[1]
+            
+            # Create mock variance ratio (this is a workaround)
+            import numpy as np
+            
+            # Calculate approximate variance explained per component
+            pca_data = adata.obsm['X_pca']
+            var_explained = np.var(pca_data, axis=0)
+            var_ratio = var_explained / np.sum(var_explained)
+            
+            # Add to adata.uns in scanpy format
+            adata.uns['pca'] = {
+                'variance': var_explained,
+                'variance_ratio': var_ratio
+            }
+            
+            print(f"✅ Added PCA compatibility metadata for {n_pcs} components")
+        else:
+            print("⚠️ No PCA data found in adata.obsm['X_pca']")
+    else:
+        print("ℹ️ PCA metadata already exists or X_pca not found")
+        
+except Exception as e:
+    print(f"⚠️ PCA compatibility fix failed: {e}")
+    print("Continuing without fix...")
+'''
+    
+    # Find the cell with sc.pl.pca_variance_ratio
+    pca_plot_cell_idx = None
+    for i, cell in enumerate(nb['cells']):
+        if (cell['cell_type'] == 'code' and 
+            any('sc.pl.pca_variance_ratio' in line for line in cell.get('source', []))):
+            pca_plot_cell_idx = i
+            break
+    
+    if pca_plot_cell_idx is None:
+        print("No sc.pl.pca_variance_ratio call found in notebook")
+        return False
+    
+    print(f"Found sc.pl.pca_variance_ratio in cell {pca_plot_cell_idx + 1}")
+    
+    # Check if fix already exists
+    for i in range(max(0, pca_plot_cell_idx - 3), pca_plot_cell_idx):
+        cell_source = ''.join(nb['cells'][i].get('source', []))
+        if 'PCA Compatibility Fix' in cell_source:
+            print("PCA compatibility fix already exists")
+            return False
+    
+    # Insert the fix before the PCA plot cell
+    fix_cell = {
+        "cell_type": "code",
+        "execution_count": None,
+        "id": "pca-compatibility-fix",
+        "metadata": {},
+        "outputs": [],
+        "source": pca_fix_code.strip().split('\n')
+    }
+    
+    nb['cells'].insert(pca_plot_cell_idx, fix_cell)
+    
+    # Write back the modified notebook
+    with open(notebook_path, 'w') as f:
+        json.dump(nb, f, indent=2)
+    
+    print(f"✅ Added PCA compatibility fix before cell {pca_plot_cell_idx + 1}")
+    return True
+
+if __name__ == "__main__":
+    notebook_path = sys.argv[1]
+    success = fix_pca_compatibility(notebook_path)
+    if success:
+        print("Notebook modified successfully")
+    else:
+        print("No changes needed")
+EOF
+      
+      # Run the fix
+      echo "🔧 Applying PCA compatibility fix..."
+      python3 fix_pca.py "${NOTEBOOK_PATH}"
+      
+      echo "✅ PCA compatibility fix completed"
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage

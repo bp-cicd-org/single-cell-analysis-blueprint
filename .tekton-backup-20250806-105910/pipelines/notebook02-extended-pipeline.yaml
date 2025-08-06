@@ -1,0 +1,39 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: notebook02-extended-pipeline
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: notebook02-extended-pipeline
+    notebook.rapids.ai/id: "02"
+spec:
+  description: |
+    📊 Notebook 02 - Extended scRNA Analysis Pipeline
+    Decoupler-GPU: Accelerated Transcriptional Regulatory Analysis
+    
+  params:
+  - name: master-run-name
+    type: string
+    default: "standalone-notebook02"
+    
+  workspaces:
+  - name: shared-storage
+    
+  tasks:
+  - name: execute-notebook02
+    taskRef:
+      name: gpu-notebook-executor-task
+    params:
+    - name: notebook-name
+      value: "02_scRNA_analysis_extended"
+    - name: execution-timeout
+      value: "5400"
+    - name: min-gpu-memory-gb
+      value: "24"
+    - name: dependency-notebooks
+      value: "01_scRNA_analysis_preprocessing"
+    - name: pipeline-run-name
+      value: $(params.master-run-name)
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage

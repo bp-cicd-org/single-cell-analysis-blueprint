@@ -1,0 +1,151 @@
+# GPU Resource Configuration for RAPIDS SingleCell Analysis
+# ========================================================
+# This file defines the GPU resource requirements and configurations
+# for different notebook execution scenarios.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-resource-config
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: rapids-singlecell-analysis
+    app.kubernetes.io/component: configuration
+data:
+  # Basic Analysis Configuration (24GB GPU requirement)
+  basic-analysis.yaml: |
+    notebooks:
+      - name: "01_scRNA_analysis_preprocessing"
+        gpu_memory_gb: 24
+        cpu_cores: 8
+        ram_gb: 32
+        timeout_minutes: 120
+        
+      - name: "02_scRNA_analysis_extended"
+        gpu_memory_gb: 24
+        cpu_cores: 8
+        ram_gb: 32
+        timeout_minutes: 90
+        depends_on: ["01_scRNA_analysis_preprocessing"]
+        
+      - name: "03_scRNA_analysis_with_pearson_residuals"
+        gpu_memory_gb: 24
+        cpu_cores: 8
+        ram_gb: 32
+        timeout_minutes: 90
+        
+      - name: "06_scRNA_analysis_90k_brain_example"
+        gpu_memory_gb: 24
+        cpu_cores: 8
+        ram_gb: 32
+        timeout_minutes: 90
+  
+  # Large Scale Analysis Configuration (48GB+ GPU requirement)
+  large-scale-analysis.yaml: |
+    notebooks:
+      - name: "04_scRNA_analysis_dask_out_of_core"
+        gpu_memory_gb: 48
+        cpu_cores: 16
+        ram_gb: 64
+        timeout_minutes: 180
+        
+      - name: "07_scRNA_analysis_1.3M_brain_example"
+        gpu_memory_gb: 80
+        cpu_cores: 16
+        ram_gb: 64
+        timeout_minutes: 240
+  
+  # Multi-GPU Analysis Configuration
+  multi-gpu-analysis.yaml: |
+    notebooks:
+      - name: "05_scRNA_analysis_multi_GPU"
+        gpu_memory_gb: 160
+        gpu_count: 2
+        cpu_cores: 32
+        ram_gb: 128
+        timeout_minutes: 240
+        multi_gpu: true
+  
+  # Hardware Profiles
+  hardware-profiles.yaml: |
+    profiles:
+      # Single A100 80GB setup
+      single-a100-80gb:
+        gpu_count: 1
+        gpu_memory_per_device: 80
+        total_gpu_memory: 80
+        recommended_notebooks: ["01", "02", "03", "06", "04", "07"]
+        skip_notebooks: ["05"]
+        
+      # Dual A100 80GB setup
+      dual-a100-80gb:
+        gpu_count: 2
+        gpu_memory_per_device: 80
+        total_gpu_memory: 160
+        recommended_notebooks: ["01", "02", "03", "06", "04", "07", "05"]
+        
+      # Triple A100 80GB setup (optimal)
+      triple-a100-80gb:
+        gpu_count: 3
+        gpu_memory_per_device: 80
+        total_gpu_memory: 240
+        recommended_notebooks: ["01", "02", "03", "06", "04", "07", "05"]
+        optimal: true
+        
+      # Single V100 32GB setup (limited)
+      single-v100-32gb:
+        gpu_count: 1
+        gpu_memory_per_device: 32
+        total_gpu_memory: 32
+        recommended_notebooks: ["01", "02", "03", "06"]
+        skip_notebooks: ["04", "07", "05"]
+        limitations: "Large scale notebooks will be skipped"
+  
+  # Execution Strategies
+  execution-strategies.yaml: |
+    strategies:
+      # Conservative execution (highest success rate)
+      conservative:
+        cleanup_between_notebooks: true
+        continue_on_failure: false
+        skip_optional_notebooks: true
+        max_retries: 2
+        timeout_multiplier: 1.5
+        
+      # Aggressive execution (fastest completion)
+      aggressive:
+        cleanup_between_notebooks: false
+        continue_on_failure: true
+        skip_optional_notebooks: false
+        max_retries: 1
+        timeout_multiplier: 1.0
+        
+      # Balanced execution (recommended)
+      balanced:
+        cleanup_between_notebooks: true
+        continue_on_failure: false
+        skip_optional_notebooks: false
+        max_retries: 1
+        timeout_multiplier: 1.2
+  
+  # Storage Requirements
+  storage-requirements.yaml: |
+    storage:
+      # Minimum storage for basic analysis
+      basic:
+        size: "100Gi"
+        class: "standard"
+        notebooks: ["01", "02", "03", "06"]
+        
+      # Storage for large scale analysis
+      large_scale:
+        size: "500Gi"
+        class: "fast-ssd"
+        notebooks: ["04", "07"]
+        
+      # Storage for complete workflow
+      complete:
+        size: "1Ti"
+        class: "fast-ssd"
+        notebooks: ["all"]
+        recommended: true

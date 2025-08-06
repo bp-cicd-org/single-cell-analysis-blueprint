@@ -1,0 +1,37 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: notebook05-multigpu-pipeline
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: notebook05-multigpu-pipeline
+    notebook.rapids.ai/id: "05"
+spec:
+  description: |
+    📊 Notebook 05 - Multi-GPU Analysis Pipeline
+    Multi-GPU showcase using persist for massive datasets
+    
+  params:
+  - name: master-run-name
+    type: string
+    default: "standalone-notebook05"
+    
+  workspaces:
+  - name: shared-storage
+    
+  tasks:
+  - name: execute-notebook05
+    taskRef:
+      name: gpu-notebook-executor-task
+    params:
+    - name: notebook-name
+      value: "05_scRNA_analysis_multi_GPU"
+    - name: execution-timeout
+      value: "14400"
+    - name: min-gpu-memory-gb
+      value: "160"
+    - name: pipeline-run-name
+      value: $(params.master-run-name)
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage

@@ -1,0 +1,130 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: complete-scrna-analysis-
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: complete-scrna-analysis
+    app.kubernetes.io/component: tekton-pipelinerun
+    pipeline.tekton.dev/gpu-enabled: "true"
+  annotations:
+    description: "Complete RAPIDS SingleCell Analysis - All 7 Notebooks"
+    execution.tekton.dev/estimated-duration: "8h"
+    hardware.tekton.dev/gpu-requirement: "3x A100 80GB recommended"
+spec:
+  pipelineRef:
+    name: complete-scrna-analysis-workflow
+    
+  params:
+  - name: pipeline-run-name
+    value: "complete-analysis-$(date +%Y%m%d-%H%M%S)"
+  - name: git-repo-url
+    value: "https://github.com/NVIDIA-AI-Blueprints/single-cell-analysis-blueprint.git"
+  - name: skip-optional-notebooks
+    value: "false"
+  - name: continue-on-failure
+    value: "false"
+  - name: cleanup-between-notebooks
+    value: "true"
+    
+  workspaces:
+  - name: shared-storage
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 100Gi
+        storageClassName: fast-ssd  # Adjust based on your cluster
+        
+  # Resource requirements and node selection
+  taskRunSpecs:
+  - pipelineTaskName: notebook-01-preprocessing
+    taskServiceAccountName: tekton-gpu-executor
+    computeResources:
+      requests:
+        memory: "32Gi"
+        cpu: "8"
+        nvidia.com/gpu: "1"
+      limits:
+        memory: "64Gi"
+        cpu: "16"
+        nvidia.com/gpu: "1"
+    
+  - pipelineTaskName: notebook-02-extended
+    taskServiceAccountName: tekton-gpu-executor
+    computeResources:
+      requests:
+        memory: "32Gi"
+        cpu: "8"
+        nvidia.com/gpu: "1"
+      limits:
+        memory: "64Gi"
+        cpu: "16"
+        nvidia.com/gpu: "1"
+        
+  - pipelineTaskName: notebook-03-pearson
+    taskServiceAccountName: tekton-gpu-executor
+    computeResources:
+      requests:
+        memory: "32Gi"
+        cpu: "8"
+        nvidia.com/gpu: "1"
+      limits:
+        memory: "64Gi"
+        cpu: "16"
+        nvidia.com/gpu: "1"
+        
+  - pipelineTaskName: notebook-06-brain90k
+    taskServiceAccountName: tekton-gpu-executor
+    computeResources:
+      requests:
+        memory: "32Gi"
+        cpu: "8"
+        nvidia.com/gpu: "1"
+      limits:
+        memory: "64Gi"
+        cpu: "16"
+        nvidia.com/gpu: "1"
+        
+  - pipelineTaskName: notebook-04-dask
+    taskServiceAccountName: tekton-gpu-executor
+    computeResources:
+      requests:
+        memory: "64Gi"
+        cpu: "16"
+        nvidia.com/gpu: "1"
+      limits:
+        memory: "128Gi"
+        cpu: "32"
+        nvidia.com/gpu: "1"
+        
+  - pipelineTaskName: notebook-07-brain1m
+    taskServiceAccountName: tekton-gpu-executor
+    computeResources:
+      requests:
+        memory: "64Gi"
+        cpu: "16"
+        nvidia.com/gpu: "1"
+      limits:
+        memory: "128Gi"
+        cpu: "32"
+        nvidia.com/gpu: "1"
+        
+  - pipelineTaskName: notebook-05-multigpu
+    taskServiceAccountName: tekton-gpu-executor
+    computeResources:
+      requests:
+        memory: "128Gi"
+        cpu: "32"
+        nvidia.com/gpu: "2"
+      limits:
+        memory: "256Gi"
+        cpu: "64"
+        nvidia.com/gpu: "3"
+        
+  # Timeout for the entire pipeline
+  timeouts:
+    pipeline: "12h"
+    tasks: "4h"

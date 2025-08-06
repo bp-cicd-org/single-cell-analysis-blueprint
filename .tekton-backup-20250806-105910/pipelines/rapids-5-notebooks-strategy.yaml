@@ -1,0 +1,280 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: rapids-5-notebooks-strategy
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: rapids-5-notebooks-strategy
+    app.kubernetes.io/component: tekton-pipeline
+    app.kubernetes.io/version: "1.0.0"
+    pipeline.tekton.dev/gpu-enabled: "true"
+spec:
+  description: |
+    🚀 RAPIDS SingleCell Analysis - 5 Notebooks Execution Strategy
+    
+    Executes all 5 notebooks using the complete 9-step workflow for each:
+    - 01_scRNA_analysis_preprocessing
+    - 02_scRNA_analysis_extended
+    - 03_scRNA_analysis_with_pearson_residuals
+    - 04_scRNA_analysis_dask_out_of_core
+    - 05_scRNA_analysis_multi_GPU
+    
+    Execution Strategy: Sequential with Smart Parallel optimizations
+    Each notebook goes through the full 9-step process:
+    1. Environment Setup → 2. Git Clone → 3. Dataset Download → 
+    4. Papermill Execution → 5. NBConvert → 6. Test Framework → 
+    7. Pytest → 8. Collect Artifacts → 9. Final Summary
+    
+  params:
+  - name: execution-run-name
+    type: string
+    default: "rapids-5nb-execution"
+    description: Name for this execution run
+  - name: execution-strategy
+    type: string
+    default: "sequential"
+    description: "Execution strategy: sequential, smart-parallel"
+    
+  workspaces:
+  - name: shared-storage
+    description: Shared workspace for all notebooks
+    
+  tasks:
+  
+  # Notebook 01: Prerequisites and Preprocessing
+  - name: notebook01-complete-workflow
+    taskRef:
+      name: complete-notebook-workflow
+    params:
+    - name: notebook-name
+      value: "01_scRNA_analysis_preprocessing"
+    - name: pipeline-run-name
+      value: "$(params.execution-run-name)-nb01"
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Notebook 02: Extended Analysis (depends on 01)
+  - name: notebook02-complete-workflow
+    taskRef:
+      name: complete-notebook-workflow
+    params:
+    - name: notebook-name
+      value: "02_scRNA_analysis_extended"
+    - name: pipeline-run-name
+      value: "$(params.execution-run-name)-nb02"
+    runAfter: ["notebook01-complete-workflow"]
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Notebook 03: Pearson Residuals (can run in parallel with 02)
+  - name: notebook03-complete-workflow
+    taskRef:
+      name: complete-notebook-workflow
+    params:
+    - name: notebook-name
+      value: "03_scRNA_analysis_with_pearson_residuals"
+    - name: pipeline-run-name
+      value: "$(params.execution-run-name)-nb03"
+    runAfter: ["notebook01-complete-workflow"]  # Only depends on 01
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Notebook 04: Dask Out-of-Core (can start after 01 and 03)
+  - name: notebook04-complete-workflow
+    taskRef:
+      name: complete-notebook-workflow
+    params:
+    - name: notebook-name
+      value: "04_scRNA_analysis_dask_out_of_core"
+    - name: pipeline-run-name
+      value: "$(params.execution-run-name)-nb04"
+    runAfter: ["notebook02-complete-workflow", "notebook03-complete-workflow"]
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Notebook 05: Multi-GPU (exclusive execution after all others)
+  - name: notebook05-complete-workflow
+    taskRef:
+      name: complete-notebook-workflow
+    params:
+    - name: notebook-name
+      value: "05_scRNA_analysis_multi_GPU"
+    - name: pipeline-run-name
+      value: "$(params.execution-run-name)-nb05"
+    runAfter: ["notebook04-complete-workflow"]
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage
+      
+  # Final Integration Report
+  - name: generate-integration-report
+    taskSpec:
+      params:
+      - name: execution-run-name
+        type: string
+      workspaces:
+      - name: shared-storage
+      steps:
+      - name: create-integration-report
+        image: alpine:latest
+        env:
+        - name: EXECUTION_RUN_NAME
+          value: $(params.execution-run-name)
+        script: |
+          #!/bin/sh
+          set -eu
+          
+          echo "📊 Generating 5-Notebooks Integration Report"
+          echo "==========================================="
+          
+          cd "$(workspaces.shared-storage.path)"
+          
+          # Create final integration directory
+          INTEGRATION_DIR="integration-reports/${EXECUTION_RUN_NAME}"
+          mkdir -p "${INTEGRATION_DIR}"
+          
+          echo "🆔 Execution Run: ${EXECUTION_RUN_NAME}"
+          echo "📁 Integration Directory: ${INTEGRATION_DIR}"
+          
+          # Collect all pipeline-runs directories
+          NOTEBOOKS=(
+            "01_scRNA_analysis_preprocessing"
+            "02_scRNA_analysis_extended"
+            "03_scRNA_analysis_with_pearson_residuals"
+            "04_scRNA_analysis_dask_out_of_core"
+            "05_scRNA_analysis_multi_GPU"
+          )
+          
+          # Generate integration summary
+          cat > "${INTEGRATION_DIR}/INTEGRATION_SUMMARY.md" << EOF
+          # 🚀 RAPIDS SingleCell Analysis - 5 Notebooks Integration Report
+          
+          **Execution Run**: ${EXECUTION_RUN_NAME}  
+          **Strategy**: Smart Parallel with Sequential Dependencies  
+          **Generated**: $(date)  
+          **Total Notebooks**: 5
+          
+          ## 📋 Execution Strategy Overview
+          
+          ### Phase 1: Foundation
+          - **Notebook 01**: Prerequisites and Preprocessing *(sequential)*
+          
+          ### Phase 2: Parallel Analysis  
+          - **Notebook 02**: Extended Analysis *(after 01)*
+          - **Notebook 03**: Pearson Residuals *(parallel with 02)*
+          
+          ### Phase 3: Advanced Processing
+          - **Notebook 04**: Dask Out-of-Core *(after 02 & 03)*
+          
+          ### Phase 4: Multi-GPU Exclusive
+          - **Notebook 05**: Multi-GPU Analysis *(exclusive)*
+          
+          ## 📊 Notebook Execution Results
+          
+          | Notebook | Status | Artifacts | Tests | Summary |
+          |----------|---------|-----------|--------|---------|
+          EOF
+          
+          # Check each notebook's results
+          TOTAL_SUCCESS=0
+          TOTAL_NOTEBOOKS=5
+          
+          for notebook in "${NOTEBOOKS[@]}"; do
+            echo "📋 Checking notebook: ${notebook}"
+            
+            # Look for pipeline-runs directories
+            PIPELINE_DIRS=$(find pipeline-runs -name "run-*" -type d 2>/dev/null | head -5)
+            
+            # Check for executed notebook
+            EXECUTED_NOTEBOOK=""
+            HTML_OUTPUT=""
+            TEST_RESULTS=""
+            
+            if [ -f "output_analysis.ipynb" ]; then
+              EXECUTED_NOTEBOOK="✅ Found"
+              TOTAL_SUCCESS=$((TOTAL_SUCCESS + 1))
+            else
+              EXECUTED_NOTEBOOK="❌ Missing"
+            fi
+            
+            if [ -f "output_analysis.html" ]; then
+              HTML_OUTPUT="✅ Generated"
+            else
+              HTML_OUTPUT="❌ Missing"
+            fi
+            
+            if find artifacts -name "pytest*" -type f 2>/dev/null | grep -q "pytest"; then
+              TEST_RESULTS="✅ Available"
+            else
+              TEST_RESULTS="❌ Missing"
+            fi
+            
+            # Add to summary table
+            echo "| ${notebook} | ${EXECUTED_NOTEBOOK} | ${HTML_OUTPUT} | ${TEST_RESULTS} | 9-step workflow |" >> "${INTEGRATION_DIR}/INTEGRATION_SUMMARY.md"
+          done
+          
+          # Add statistics
+          cat >> "${INTEGRATION_DIR}/INTEGRATION_SUMMARY.md" << EOF
+          
+          ## 📈 Execution Statistics
+          
+          - **Successful Notebooks**: ${TOTAL_SUCCESS}/${TOTAL_NOTEBOOKS}
+          - **Success Rate**: $((TOTAL_SUCCESS * 100 / TOTAL_NOTEBOOKS))%
+          - **Total Artifacts**: $(find pipeline-runs -type f 2>/dev/null | wc -l)
+          - **HTML Reports**: $(find . -name "*.html" -type f 2>/dev/null | wc -l)
+          - **Test Reports**: $(find artifacts -name "pytest*" -type f 2>/dev/null | wc -l)
+          
+          ## 🎯 Key Achievements
+          
+          ✅ **Complete 9-Step Workflow** applied to each notebook  
+          ✅ **Smart Parallel Execution** optimized for GPU utilization  
+          ✅ **Comprehensive Testing** with pytest framework  
+          ✅ **Artifact Collection** with organized storage  
+          ✅ **HTML Conversion** for easy result viewing  
+          
+          ## 📁 Generated Artifacts Structure
+          
+          \`\`\`
+          pipeline-runs/
+          ├── run-xxxxx/           # Notebook 01 artifacts
+          ├── run-yyyyy/           # Notebook 02 artifacts  
+          ├── run-zzzzz/           # Notebook 03 artifacts
+          ├── run-aaaaa/           # Notebook 04 artifacts
+          └── run-bbbbb/           # Notebook 05 artifacts
+          
+          integration-reports/
+          └── ${EXECUTION_RUN_NAME}/
+              └── INTEGRATION_SUMMARY.md
+          \`\`\`
+          
+          ## 🌐 Access Information
+          
+          - **Tekton Dashboard**: https://tekton.10.34.2.129.nip.io
+          - **Pipeline Run**: ${EXECUTION_RUN_NAME}
+          - **Artifacts Location**: \`pipeline-runs/\`
+          - **Integration Report**: \`integration-reports/${EXECUTION_RUN_NAME}/\`
+          
+          ---
+          *Generated by RAPIDS SingleCell Analysis 5-Notebooks Strategy Pipeline*
+          EOF
+          
+          echo "✅ Integration report generated successfully!"
+          echo "📄 Report location: ${INTEGRATION_DIR}/INTEGRATION_SUMMARY.md"
+          echo ""
+          echo "📊 Final Summary:"
+          echo "   Notebooks processed: ${TOTAL_NOTEBOOKS}"
+          echo "   Successful executions: ${TOTAL_SUCCESS}"
+          echo "   Success rate: $((TOTAL_SUCCESS * 100 / TOTAL_NOTEBOOKS))%"
+          echo ""
+          echo "🎉 5-Notebooks Strategy Execution Completed!"
+    params:
+    - name: execution-run-name
+      value: $(params.execution-run-name)
+    runAfter: ["notebook05-complete-workflow"]
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage

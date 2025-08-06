@@ -1,0 +1,37 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: notebook03-pearson-pipeline
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: notebook03-pearson-pipeline
+    notebook.rapids.ai/id: "03"
+spec:
+  description: |
+    📊 Notebook 03 - Pearson Residuals Analysis Pipeline
+    Alternative normalization approach using Pearson Residuals
+    
+  params:
+  - name: master-run-name
+    type: string
+    default: "standalone-notebook03"
+    
+  workspaces:
+  - name: shared-storage
+    
+  tasks:
+  - name: execute-notebook03
+    taskRef:
+      name: gpu-notebook-executor-task
+    params:
+    - name: notebook-name
+      value: "03_scRNA_analysis_with_pearson_residuals"
+    - name: execution-timeout
+      value: "5400"
+    - name: min-gpu-memory-gb
+      value: "24"
+    - name: pipeline-run-name
+      value: $(params.master-run-name)
+    workspaces:
+    - name: shared-storage
+      workspace: shared-storage

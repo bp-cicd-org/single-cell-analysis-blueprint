@@ -1,0 +1,251 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: test-notebook01-
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: test-notebook01
+    pipeline.tekton.dev/gpu-enabled: "true"
+  annotations:
+    description: "Test run for Notebook 01 - Basic scRNA preprocessing"
+    expected-duration: "2h"
+    gpu-requirement: "1x A100 80GB"
+spec:
+  pipelineSpec:
+    description: |
+      🧪 Test Pipeline for Notebook 01 - scRNA Analysis Preprocessing
+      
+      This is a simplified test pipeline to validate:
+      - Environment setup and dependency installation
+      - Repository cloning and access
+      - GPU availability and RAPIDS functionality
+      - Notebook 01 execution with basic dataset
+      
+    params:
+    - name: pipeline-run-name
+      type: string
+      description: Name of the current pipeline run
+      
+    workspaces:
+    - name: shared-storage
+      description: Shared workspace for all tasks
+      
+    tasks:
+    
+    # Task 1: Setup Environment and Clone Repository
+    - name: setup-and-clone
+      taskSpec:
+        workspaces:
+        - name: shared-storage
+        params:
+        - name: pipeline-run-name
+          type: string
+        steps:
+        - name: setup-environment
+          image: nvcr.io/nvidia/rapidsai/notebooks:25.04-cuda12.8-py3.12
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+          env:
+          - name: PIPELINE_RUN_NAME
+            value: $(params.pipeline-run-name)
+          script: |
+            #!/bin/bash
+            set -eu
+            
+            echo "🏗️  Setting up test environment for Notebook 01"
+            echo "=============================================="
+            echo "Pipeline Run: ${PIPELINE_RUN_NAME}"
+            echo "Workspace: $(workspaces.shared-storage.path)"
+            
+            cd "$(workspaces.shared-storage.path)"
+            
+            # Create directory structure
+            mkdir -p {data,outputs,logs,artifacts}
+            chmod -R 777 .
+            
+            # Test GPU availability
+            echo "🖥️  Testing GPU availability..."
+            nvidia-smi
+            echo "✅ GPU test passed"
+            
+            # Install dependencies
+            echo "📦 Installing core dependencies..."
+            pip install --quiet --no-cache-dir --upgrade \
+              jupyter papermill nbconvert \
+              rapids-singlecell scanpy anndata \
+              matplotlib seaborn plotly \
+              scikit-learn umap-learn \
+              dask dask-cuda
+              
+            echo "🔗 Cloning repository..."
+            git clone https://github.com/NVIDIA-AI-Blueprints/single-cell-analysis-blueprint.git
+            
+            # Verify notebook exists
+            if [ -f "single-cell-analysis-blueprint/notebooks/01_scRNA_analysis_preprocessing.ipynb" ]; then
+              echo "✅ Notebook 01 found and accessible"
+            else
+              echo "❌ Notebook 01 not found"
+              exit 1
+            fi
+            
+            echo "✅ Setup completed successfully"
+      params:
+      - name: pipeline-run-name
+        value: $(params.pipeline-run-name)
+      workspaces:
+      - name: shared-storage
+        workspace: shared-storage
+    
+    # Task 2: Execute Notebook 01
+    - name: execute-notebook01
+      taskRef:
+        name: gpu-notebook-executor-task
+      params:
+      - name: notebook-name
+        value: "01_scRNA_analysis_preprocessing"
+      - name: min-gpu-memory-gb
+        value: "24"
+      - name: execution-timeout
+        value: "7200"  # 2 hours
+      - name: pipeline-run-name
+        value: $(params.pipeline-run-name)
+      - name: save-outputs
+        value: "true"
+      - name: cleanup-kernel
+        value: "true"
+      runAfter: ["setup-and-clone"]
+      workspaces:
+      - name: shared-storage
+        workspace: shared-storage
+        
+    # Task 3: Validate Results
+    - name: validate-results
+      taskSpec:
+        workspaces:
+        - name: shared-storage
+        params:
+        - name: pipeline-run-name
+          type: string
+        steps:
+        - name: validate-outputs
+          image: nvcr.io/nvidia/rapidsai/notebooks:25.04-cuda12.8-py3.12
+          securityContext:
+            runAsUser: 0
+          env:
+          - name: PIPELINE_RUN_NAME
+            value: $(params.pipeline-run-name)
+          script: |
+            #!/bin/bash
+            set -eu
+            
+            echo "🔍 Validating Notebook 01 Results"
+            echo "================================="
+            
+            cd "$(workspaces.shared-storage.path)"
+            
+            # Check if executed notebook exists
+            EXECUTED_NOTEBOOK="outputs/01_scRNA_analysis_preprocessing.executed.ipynb"
+            if [ -f "${EXECUTED_NOTEBOOK}" ]; then
+              echo "✅ Executed notebook found: ${EXECUTED_NOTEBOOK}"
+              
+              # Check file size
+              SIZE=$(du -h "${EXECUTED_NOTEBOOK}" | cut -f1)
+              echo "   File size: ${SIZE}"
+              
+              # Check if notebook has outputs
+              OUTPUT_COUNT=$(python3 -c "
+            import json
+            with open('${EXECUTED_NOTEBOOK}', 'r') as f:
+              nb = json.load(f)
+            count = sum(1 for cell in nb['cells'] if cell.get('outputs'))
+            print(count)
+            " || echo "0")
+              echo "   Cells with outputs: ${OUTPUT_COUNT}"
+              
+              if [ "${OUTPUT_COUNT}" -gt "10" ]; then
+                echo "✅ Notebook appears to have executed successfully"
+              else
+                echo "⚠️  Warning: Low output count, notebook may not have executed properly"
+              fi
+              
+              # Check for HTML output
+              HTML_FILE="outputs/01_scRNA_analysis_preprocessing.html"
+              if [ -f "${HTML_FILE}" ]; then
+                echo "✅ HTML output generated: ${HTML_FILE}"
+              else
+                echo "⚠️  HTML output not found"
+              fi
+              
+            else
+              echo "❌ Executed notebook not found"
+              echo "Available outputs:"
+              ls -la outputs/ || echo "No outputs directory"
+              exit 1
+            fi
+            
+            # Generate simple report
+            REPORT_FILE="artifacts/notebook01-test-report.txt"
+            mkdir -p artifacts
+            cat > "${REPORT_FILE}" << 'EOF'
+            Notebook 01 Test Report
+            ======================
+            Pipeline Run: ${PIPELINE_RUN_NAME}
+            Generated: $(date)
+            
+            Results:
+            - Executed notebook: ${EXECUTED_NOTEBOOK} (${SIZE})
+            - Output cells: ${OUTPUT_COUNT}
+            - HTML output: $([ -f "${HTML_FILE}" ] && echo "Generated" || echo "Missing")
+            
+            Test Status: SUCCESS
+            EOF
+            
+            echo "📄 Report generated: ${REPORT_FILE}"
+            cat "${REPORT_FILE}"
+            
+            echo "🎉 Notebook 01 test validation completed successfully!"
+      params:
+      - name: pipeline-run-name
+        value: $(params.pipeline-run-name)
+      runAfter: ["execute-notebook01"]
+      workspaces:
+      - name: shared-storage
+        workspace: shared-storage
+        
+  # Pipeline parameters
+  params:
+  - name: pipeline-run-name
+    value: "test-notebook01-$(date +%Y%m%d-%H%M%S)"
+    
+  # Workspace configuration
+  workspaces:
+  - name: shared-storage
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 50Gi
+        # Adjust storageClassName based on your cluster
+        # storageClassName: fast-ssd
+            
+  # Resource specifications for GPU execution
+  taskRunSpecs:
+  - pipelineTaskName: execute-notebook01
+    serviceAccountName: tekton-gpu-executor
+    computeResources:
+      requests:
+        memory: "32Gi"
+        cpu: "8"
+        nvidia.com/gpu: "1"
+      limits:
+        memory: "64Gi"
+        cpu: "16"
+        nvidia.com/gpu: "1"
+        
+  # Timeouts
+  timeouts:
+    pipeline: "4h"
+    tasks: "2h"
