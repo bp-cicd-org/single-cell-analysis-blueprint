@@ -1,0 +1,712 @@
+name: Single-cell notebooks runner
+run-name: Single-cell notebooks runner --- triggered by ${{ github.actor }}
+
+on:
+  pull_request: {}
+  push:
+    branches: [main, master, staging, release/*]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deploy Environment"
+        required: true
+        default: "staging"
+      debug_from_step:
+        description: 'Start from step (e.g. "load-docker")'
+        required: false
+        default: ""
+      target_branch:
+        description: "Branch to run on (e.g. main)"
+        required: false
+        default: ""
+
+permissions:
+  checks: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-notebook:
+    runs-on: arc-runner-set-oke-org-poc
+    environment: dev
+    strategy:
+      matrix:
+        NOTEBOOK_FILENAME: [
+            "01_scRNA_analysis_preprocessing.ipynb",
+            # "02_scRNA_analysis_extended.ipynb"
+            # "03_scRNA_analysis_with_pearson_residuals.ipynb",
+            # "04_scRNA_analysis_dask_out_of_core.ipynb",
+            # "05_scRNA_analysis_multi_GPU.ipynb",
+            # "06_scRNA_analysis_90k_brain_example.ipynb",
+            # "07_scRNA_analysis_1.3M_brain_example.ipynb",
+          ]
+      max-parallel: 4
+      fail-fast: false
+
+    env:
+      DEPLOY_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}
+
+      #### VARS
+      DOCKER_IMG_NAME: "nvcr.io/nvidia/rapidsai/notebooks"
+      DOCKER_IMG_TAG: "25.06-cuda12.8-py3.12"
+      DOCKER_COMPOSE_FILE: "${{ github.workspace }}/docker/brev/docker-compose-nb-2504.yaml"
+      NOTEBOOK_RELATIVED_DIR: "notebooks"
+      PYTHON_VERSION: "3.12"
+
+      ### CONSTANT
+      DOCKER_WRITEABLE_DIR: "/tmp"
+      DOCKER_CACHE_DIR: "docker-pull-cache"
+      OUTPUT_NOTEBOOK: "result_${{ matrix.NOTEBOOK_FILENAME }}"
+      OUTPUT_NOTEBOOK_HTML: "result_${{ matrix.NOTEBOOK_FILENAME }}.html"
+      OUTPUT_PYTEST_COVERAGE_XML: "pytest_coverage_${{ matrix.NOTEBOOK_FILENAME }}.xml"
+      OUTPUT_PYTEST_RESULT_XML: "pytest_result_${{ matrix.NOTEBOOK_FILENAME }}.xml"
+      OUTPUT_PYTEST_REPORT_HTML: "pytest_report_${{ matrix.NOTEBOOK_FILENAME }}.html"
+      ARTIFACT_DIR: "${{ github.workspace }}/test-results/${{ matrix.NOTEBOOK_FILENAME }}"
+
+    steps:
+      - name: Set global vars
+        id: set_global_vars
+        run: |
+          DOCKER_IMG_CACHE_NAME=$(echo "$DOCKER_IMG_NAME:$DOCKER_IMG_TAG" | sed 's/[\/:@.]/_/g')
+          echo "Cache filename: ${DOCKER_IMG_CACHE_NAME}.tar"
+          echo "docker_img_cache_name=${DOCKER_IMG_CACHE_NAME}" >> $GITHUB_OUTPUT
+
+          NOTEBOOK_FILENAME="${{ matrix.NOTEBOOK_FILENAME }}"
+          NOTEBOOK_BASENAME=$(basename "$NOTEBOOK_FILENAME" | cut -d. -f1)
+          echo "notebook_filename=${NOTEBOOK_FILENAME}" >> $GITHUB_OUTPUT
+          echo "notebook_basename=${NOTEBOOK_BASENAME}" >> $GITHUB_OUTPUT
+
+          echo "cache_key=${{ runner.os }}-docker-$DOCKER_IMG_CACHE_NAME" >> $GITHUB_OUTPUT
+
+          ARTIFACT_CLEAN_NAME=$(echo "$NOTEBOOK_BASENAME" | tr -d '"<>:|*?\\/')
+          echo "artifact_name=results-$ARTIFACT_CLEAN_NAME" >> $GITHUB_OUTPUT
+
+      - name: Checkout BP repository
+        uses: actions/checkout@v4
+
+      - name: Verify Token Access
+        run: |
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.JOHNNY_DEV_GH_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/NVIDIA-AI-Blueprints/blueprint-github-test")
+
+          if [ "$RESPONSE" = "200" ]; then
+            echo "✓ Repository accessible"
+          elif [ "$RESPONSE" = "404" ]; then
+            echo "✗ Repository not found (check name/visibility)"
+            exit 1
+          else
+            echo "✗ Unexpected response: $RESPONSE"
+            exit 1
+          fi
+
+      - name: Checkout Test repository
+        uses: actions/checkout@v4
+        with:
+          repository: "NVIDIA-AI-Blueprints/blueprint-github-test"
+          token: ${{ secrets.JOHNNY_DEV_GH_TOKEN }}
+          path: blueprint-github-test
+          fetch-depth: 1
+
+      - uses: ./.github/actions/setup-env
+        with:
+          python-version: "3.12"
+          check-disk: "false"
+
+      - name: Setup docker env
+        env:
+          NGC_API_Key: ${{ secrets.NGC_API_KEY }}
+        run: |
+          # Install wget
+          sudo apt-get update
+          sudo apt-get install -y wget
+
+          # Install Docker and Docker Compose in a single step
+          curl -fsSL https://get.docker.com -o get-docker.sh
+          sudo sh get-docker.sh
+          sudo apt-get update
+          sudo apt-get install -y docker-compose-plugin docker-compose build-essential
+          # Get System Info
+          echo "===================== System Info ====================="
+          more /etc/os-release
+          nvidia-smi
+          docker version
+          docker compose version
+
+      - uses: ./.github/actions/check-sysinfo
+
+      - name: Ensure cache directory exists
+        run: |
+          DOCKER_WRITEABLE_DIR="${{ env.DOCKER_WRITEABLE_DIR }}"
+          DOCKER_CACHE_DIR="${{ env.DOCKER_CACHE_DIR }}"
+
+          mkdir -p "$DOCKER_WRITEABLE_DIR/$DOCKER_CACHE_DIR"
+          sudo chown -R $(id -u):$(id -g) "$DOCKER_WRITEABLE_DIR/$DOCKER_CACHE_DIR"
+          ls -ld "$DOCKER_WRITEABLE_DIR/$DOCKER_CACHE_DIR"
+
+      - name: Cache Docker image
+        id: cache-docker-image
+        if: always()
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.DOCKER_CACHE_DIR }}
+          key: "${{ steps.set_global_vars.outputs.cache_key }}"
+          restore-keys: |
+            ${{ runner.os }}-docker-
+
+      - name: Debug info
+        run: |
+          echo "Primary Key: ${{ steps.cache-docker-image.outputs.cache-primary-key || 'N/A' }}"
+          echo "Cache Hit: ${{ steps.cache-docker-image.outputs.cache-hit || 'false' }}"
+          echo "Cache Path: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.DOCKER_CACHE_DIR }}"
+          ls -la ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.DOCKER_CACHE_DIR }}
+
+      - name: Load cached docker image
+        if: steps.cache-docker-image.outputs.cache-hit == 'true'
+        run: |
+          DOCKER_CACHE_DIR="${{ env.DOCKER_CACHE_DIR }}"
+          DOCKER_IMG_CACHE_NAME="${{ steps.set_global_vars.outputs.docker_img_cache_name }}"
+          echo "Cached file with path: $DOCKER_CACHE_DIR/$DOCKER_IMG_CACHE_NAME"
+
+          if [ -f "${DOCKER_CACHE_DIR}/${DOCKER_IMG_CACHE_NAME}.tar" ]; then
+            echo "[Info]: the docker image cache exists, just load it from cache"
+            docker load -i "${DOCKER_CACHE_DIR}/${DOCKER_IMG_CACHE_NAME}".tar
+            echo "[Info]: the docker image cache exists, just load it from cache --- Done"
+          fi
+
+      - name: Pull docker image
+        run: |
+          start_time=$(date +%s)
+
+          DOCKER_IMG_NAME="${{ env.DOCKER_IMG_NAME }}"
+          DOCKER_IMG_TAG="${{ env.DOCKER_IMG_TAG }}"
+          DOCKER_CACHE_DIR="${{ env.DOCKER_CACHE_DIR }}"
+          DOCKER_IMG_CACHE_NAME="${{ steps.set_global_vars.outputs.docker_img_cache_name }}"
+
+          echo "Docker image will use: $DOCKER_IMG_NAME:$DOCKER_IMG_TAG"
+
+          if docker image inspect "$DOCKER_IMG_NAME:$DOCKER_IMG_TAG" >/dev/null 2>&1; then
+            echo "[Info] Image already exists, skipping pull."
+            exit 0
+          fi
+
+          echo "[Info]: the docker image cache does NOT exists, just pull it from remote"
+          if ! docker pull "$DOCKER_IMG_NAME:$DOCKER_IMG_TAG"; then
+            echo "Pull failed, retrying..."
+            sleep 10
+            docker pull --quiet "$DOCKER_IMG_NAME:$DOCKER_IMG_TAG" || {
+              echo "Error: Docker pull failed after retry"
+              exit 1
+            }
+          fi
+          echo "[Info]: the docker image cache does NOT exists, just pull it from remote --- Done"
+
+
+          mkdir -p ${DOCKER_CACHE_DIR}
+          echo "[Info]: the docker image pull done, save it to cache path now"
+          docker save $DOCKER_IMG_NAME:$DOCKER_IMG_TAG > ${DOCKER_CACHE_DIR}/${DOCKER_IMG_CACHE_NAME}.tar
+          docker save -o ${DOCKER_CACHE_DIR}/${DOCKER_IMG_CACHE_NAME}.tar $DOCKER_IMG_NAME:$DOCKER_IMG_TAG
+          ls -alh ${DOCKER_CACHE_DIR}
+          echo "[Info]: the docker image pull done, save it to cache path now --- Done"
+
+          end_time=$(date +%s)
+          echo "Execution time: $((end_time - start_time)) seconds"
+        timeout-minutes: 20
+
+      - name: Verify cache
+        run: |
+          DOCKER_CACHE_DIR="${{ env.DOCKER_CACHE_DIR }}"
+          du -sh ${DOCKER_CACHE_DIR}/*
+
+      - name: Start container
+        run: |
+          start_time=$(date +%s)
+          docker images -a
+          echo "Docker compose will use file: $DOCKER_COMPOSE_FILE"
+
+
+          DOCKER_IMG_TAG="${{ env.DOCKER_IMG_TAG }}"
+          export DOCKER_IMG_TAG=$DOCKER_IMG_TAG
+          export NOTEBOOKS_HOST_PATH="${{ github.workspace }}"
+
+          echo "DOCKER_IMG_TAG: $DOCKER_IMG_TAG"
+          echo "NOTEBOOKS_HOST_PATH: $NOTEBOOKS_HOST_PATH"
+
+          pwd
+          ls -al ./
+
+          set -e
+          export COMPOSE_HTTP_TIMEOUT=300
+          docker compose --verbose -f "$DOCKER_COMPOSE_FILE" up -d --wait --force-recreate
+
+          end_time=$(date +%s)
+          echo "Execution time: $((end_time - start_time)) seconds"
+
+      - name: Check containers status
+        run: |
+          docker ps -a
+          docker compose -f "$DOCKER_COMPOSE_FILE" logs --no-color --tail=200 > docker-logs.txt
+          head -c 500000 docker-logs.txt
+
+      - name: Ensure container is ready for testing
+        run: |
+          docker compose -f "$DOCKER_COMPOSE_FILE" exec -u root backend bash -c '
+            apt-get update
+            apt-get install -y libxml2-utils
+            apt-get clean
+          '
+
+          docker compose -f "$DOCKER_COMPOSE_FILE" exec -T backend bash <<'EOF'
+          set -euxo pipefail
+
+          whoami
+          pwd
+          ls -al ./
+          ls -al ./notebooks/
+          ls -al /tmp/app
+
+          ### double time to copy files from /tmp/app
+          echo "===double confirm the files are copied in home directory==="
+          cp -rf /tmp/app/* /home/rapids/
+          ls -al ./
+          ls -al ./notebooks
+
+          python -m pip install --upgrade pip --user || true
+
+          echo '=== Installing requirements ==='
+          MAX_RETRIES=3
+          RETRY_DELAY=5
+          REQUIREMENTS_FILE="requirements.txt"
+
+          for ((i=1; i<=MAX_RETRIES; i++)); do
+              echo "Attempt #$i to install dependencies from: $REQUIREMENTS_FILE..."
+
+              # Execute pip install and check exit status directly
+              if pip install --user --no-cache-dir -r "$REQUIREMENTS_FILE"; then
+                  echo "Dependencies installed successfully!"
+                  break
+              else
+                  echo "Dependency installation failed (exit code: $?)."
+                  if [ "$i" -lt "$MAX_RETRIES" ]; then
+                      echo "Retrying in $RETRY_DELAY seconds..."
+                      sleep "$RETRY_DELAY"
+                  else
+                      echo "Maximum retry attempts ($MAX_RETRIES) reached. Proceeding with subsequent commands."
+                  fi
+              fi
+          done
+
+          pip install jupyter papermill pytest-html pytest-cov
+
+          echo '=== Verifying installations ==='
+          pip list
+
+          echo '=== Verifying kernel ==='
+          jupyter kernelspec list
+          EOF
+
+      - name: Debug --- Setup tmate debug session
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+          timeout-minutes: 60
+
+      - name: Run Jupyter Notebook
+        id: run-jupyter-notebook
+        timeout-minutes: 30
+        run: |
+          # NOTE: matrix expression won't be parsed in EOF
+          NOTEBOOK_RELATIVED_DIR="${{ env.NOTEBOOK_RELATIVED_DIR }}"
+          NOTEBOOK_FILENAME="${{ steps.set_global_vars.outputs.notebook_filename }}"
+          OUTPUT_NOTEBOOK="${{ env.OUTPUT_NOTEBOOK }}"
+          DOCKER_WRITEABLE_DIR="${{ env.DOCKER_WRITEABLE_DIR }}"
+
+          echo "=============== Executing notebook ====================="
+
+          docker compose -f "$DOCKER_COMPOSE_FILE" exec backend bash <<EOF
+          set -euxo pipefail
+          export PYTHONUNBUFFERED=1
+
+          papermill "${NOTEBOOK_RELATIVED_DIR}/${NOTEBOOK_FILENAME}" "${DOCKER_WRITEABLE_DIR}/${OUTPUT_NOTEBOOK}" \
+            --log-output \
+            --log-level DEBUG \
+            --progress-bar \
+            --report-mode \
+            --kernel python3 2>&1 | tee "${DOCKER_WRITEABLE_DIR}/papermill.log"
+
+          echo "===============Check file====================="
+          if [ -s "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK" ]; then
+              echo "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK exists and has contents"
+          else
+              echo "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK does NOT exist or has NO contents"
+          fi
+          echo "===============Check file====================="
+
+          echo '=== Papermill logs ==='
+          cat "$DOCKER_WRITEABLE_DIR/papermill.log"
+          EOF
+
+          echo "=============== Executing notebook --- Done ====================="
+
+      - name: Convert result to html format
+        id: generate-notebook-html
+        if: steps.run-jupyter-notebook.outcome == 'success'
+        run: |
+          echo "Run jupyter notebook succeeded, running Convert result to HTML format"
+          OUTPUT_NOTEBOOK="${{ env.OUTPUT_NOTEBOOK }}"
+          OUTPUT_NOTEBOOK_HTML="${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          DOCKER_WRITEABLE_DIR="${{ env.DOCKER_WRITEABLE_DIR }}"
+
+          docker compose -f "$DOCKER_COMPOSE_FILE" exec backend bash <<EOF
+          jupyter nbconvert --to html "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK" \
+            --output "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML" \
+            --output-dir "$DOCKER_WRITEABLE_DIR" \
+            > "$DOCKER_WRITEABLE_DIR/jupyter_nbconvert.log" 2>&1
+          EOF
+
+          docker compose -f "$DOCKER_COMPOSE_FILE" exec -T backend bash -c '
+            echo "===jupyter_nbconvert logs==="
+            cat "$DOCKER_WRITEABLE_DIR/jupyter_nbconvert.log"
+
+            echo "===============Check file====================="
+            if [ -s "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML" ]; then
+                echo "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML exists and has contents"
+            else
+                echo "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML does NOT exist or has NO contents"
+            fi
+            echo "===============Check file====================="
+          '
+
+      # - name: Install Poetry/Dependencies and execute pytest
+      #   id: run-pytest
+      #   run: |
+      #     docker compose -f "$DOCKER_COMPOSE_FILE" exec -T backend bash -c '
+      #       set -euo pipefail
+      #       cd blueprint-github-test
+
+      #       OUTPUT_NOTEBOOK_HTML="${{ env.OUTPUT_NOTEBOOK_HTML }}"
+      #       OUTPUT_PYTEST_COVERAGE_XML="${{ env.OUTPUT_PYTEST_COVERAGE_XML }}"
+      #       OUTPUT_PYTEST_RESULT_XML="${{ env.OUTPUT_PYTEST_RESULT_XML }}"
+      #       OUTPUT_PYTEST_REPORT_HTML="${{ env.OUTPUT_PYTEST_REPORT_HTML }}"
+      #       DOCKER_WRITEABLE_DIR="${{ env.DOCKER_WRITEABLE_DIR }}"
+
+      #       export PATH="/home/rapids/.local/bin:$PATH"
+      #       curl -sSL https://install.python-poetry.org | python3 -
+
+      #       export PATH="/home/rapids/.local/bin:$PATH"
+      #       poetry install --no-interaction --no-root
+      #       source "$(poetry env info --path)/bin/activate"
+
+      #       rm -rf input/*
+      #       NOTEBOOK_BASENAME="${{ steps.set_global_vars.outputs.notebook_basename }}"
+      #       cp "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML" input/"$NOTEBOOK_BASENAME".html
+      #       echo "===============Test files prepared====================="
+      #       ls -l input/
+
+      #       # poetry run pytest -m single_cell --disable-warnings \
+      #       #   --html="$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_HTML" \
+      #       #   --self-contained-html || echo "Pytest completed with status $?"
+
+      #       TEST_OUTPUT=$(poetry run pytest -m single_cell \
+      #         --cov=./ \
+      #         --cov-report=xml:"$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_COVERAGE_XML" \
+      #         --junitxml="$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" \
+      #         --html"="$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_REPORT_HTML" \
+      #         --self-contained-html 2>&1)
+
+      #       echo "===============Check file====================="
+      #       ls -alh $DOCKER_WRITEABLE_DIR
+      #       echo "===============Check file====================="
+
+      #       echo "TEST_OUTPUT<<EOF" >> $GITHUB_ENV
+      #       echo "$TEST_OUTPUT" >> $GITHUB_ENV
+      #       echo "EOF" >> $GITHUB_ENV
+
+      #       passed=$(xmllint --xpath 'count(//testcase[not(skipped) and not(failure) and not(error)])' "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" || echo "0")
+      #       failures=$(xmllint --xpath 'count(//testcase[failure])' "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" || echo "0")
+      #       errors=$(xmllint --xpath 'count(//testcase[error])' "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" || echo "0")
+      #       skipped=$(xmllint --xpath 'count(//testcase[skipped])' "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" || echo "0")
+      #       xfailed=$(xmllint --xpath 'count(//testcase[contains(@name, "[xfail]")])' "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" || echo "0")
+      #       xpassed=$(xmllint --xpath 'count(//testcase[contains(@name, "[xpass]")])' "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" || echo "0")
+      #       actual_passed=$((passed - xpassed))
+
+      #       echo "### 📊 Python ${{ matrix.NOTEBOOK_FILENAME }} Detailed Results" >> $GITHUB_STEP_SUMMARY
+      #       echo '```' >> $GITHUB_STEP_SUMMARY
+      #       echo "$TEST_OUTPUT" >> $GITHUB_STEP_SUMMARY
+      #       echo '```' >> $GITHUB_STEP_SUMMARY
+
+      #       echo "### 🔍 Test Summary" >> $GITHUB_STEP_SUMMARY
+      #       echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+      #       echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+      #       echo "| ✅ Passed | $actual_passed |" >> $GITHUB_STEP_SUMMARY
+      #       echo "| ❌ Failed | $failures |" >> $GITHUB_STEP_SUMMARY
+      #       echo "| ⏩ Skipped | $skipped |" >> $GITHUB_STEP_SUMMARY
+      #       echo "| 💥 Errors | $errors |" >> $GITHUB_STEP_SUMMARY
+      #       echo "| 🔶 XFailed | $xfailed |" >> $GITHUB_STEP_SUMMARY
+      #       echo "| ⚠️ XPassed | $xpassed |" >> $GITHUB_STEP_SUMMARY
+
+      #       echo "passed=$actual_passed" >> $GITHUB_OUTPUT
+      #       echo "failed=$failures" >> $GITHUB_OUTPUT
+      #       echo "skipped=$skipped" >> $GITHUB_OUTPUT
+      #       echo "errors=$errors" >> $GITHUB_OUTPUT
+      #       echo "xfailed=$xfailed" >> $GITHUB_OUTPUT
+      #       echo "xpassed=$xpassed" >> $GITHUB_OUTPUT
+      #     '
+
+      - name: Install Poetry/Dependencies and execute pytest
+        id: run-pytest
+        run: |
+          SCRIPT_FILE=$(mktemp)
+          cat > $SCRIPT_FILE <<'EOS'
+          set -euxo pipefail
+          cd blueprint-github-test
+
+          OUTPUT_NOTEBOOK_HTML="$1"
+          OUTPUT_PYTEST_COVERAGE_XML="$2"
+          OUTPUT_PYTEST_RESULT_XML="$3"
+          OUTPUT_PYTEST_REPORT_HTML="$4"
+          DOCKER_WRITEABLE_DIR="$5"
+          NOTEBOOK_BASENAME="$6"
+
+          export PATH="/home/rapids/.local/bin:$PATH"
+          python -m pip install --upgrade pip
+          curl -sSL https://install.python-poetry.org | python3 -
+
+          poetry config virtualenvs.create true
+          poetry install --no-interaction --no-root
+
+          if [ -d "cloudia" ]; then
+            pushd cloudia
+            pip install -e .
+            popd
+          fi
+
+          source "$(poetry env info --path)/bin/activate"
+
+          rm -rf input/*
+          mkdir -p input
+          cp "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML" "input/$NOTEBOOK_BASENAME.html"
+
+          echo "Current directory: $(pwd)"
+          echo "Python path: $(which python)"
+          echo "Poetry env: $(poetry env info)"
+
+          TEST_OUTPUT=$(poetry run pytest -m single_cell \
+            --cov=./ \
+            --cov-report=xml:"$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_COVERAGE_XML" \
+            --junitxml:"$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" \
+            --html:"$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_REPORT_HTML" \
+            --self-contained-html 2>&1) || true
+
+          RESULTS_FILE="$DOCKER_WRITEABLE_DIR/test_results.txt"
+          echo "TEST_OUTPUT_START" > "$RESULTS_FILE"
+          echo "$TEST_OUTPUT" >> "$RESULTS_FILE"
+          echo "TEST_OUTPUT_END" >> "$RESULTS_FILE"
+
+          parse_xml() {
+            local file="$1"
+            local xpath="$2"
+            xmllint --xpath "$xpath" "$file" 2>/dev/null || echo "0"
+          }
+
+          passed=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[not(skipped) and not(failure) and not(error)])')
+          failures=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[failure])')
+          errors=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[error])')
+          skipped=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[skipped])')
+          xfailed=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[contains(@name, "[xfail]")])')
+          xpassed=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[contains(@name, "[xpass]")])')
+          actual_passed=$((passed - xpassed))
+
+          {
+            echo "passed=$actual_passed"
+            echo "failed=$failures"
+            echo "skipped=$skipped"
+            echo "errors=$errors"
+            echo "xfailed=$xfailed"
+            echo "xpassed=$xpassed"
+          } >> "$RESULTS_FILE"
+          EOS
+
+          docker compose -f "$DOCKER_COMPOSE_FILE" exec -T backend bash -s -- \
+            "${{ env.OUTPUT_NOTEBOOK_HTML }}" \
+            "${{ env.OUTPUT_PYTEST_COVERAGE_XML }}" \
+            "${{ env.OUTPUT_PYTEST_RESULT_XML }}" \
+            "${{ env.OUTPUT_PYTEST_REPORT_HTML }}" \
+            "${{ env.DOCKER_WRITEABLE_DIR }}" \
+            "${{ steps.set_global_vars.outputs.notebook_basename }}" \
+            < "$SCRIPT_FILE" || echo "Docker exec completed with status $?"
+
+          RESULTS_CONTENT=$(docker compose -f "$DOCKER_COMPOSE_FILE" exec -T backend \
+            cat "${{ env.DOCKER_WRITEABLE_DIR }}/test_results.txt" 2>/dev/null || echo "RESULTS_ERROR")
+
+          if [ "$RESULTS_CONTENT" = "RESULTS_ERROR" ]; then
+            echo "::error::Failed to retrieve test results"
+            exit 1
+          fi
+
+          TEST_OUTPUT=$(sed -n '/TEST_OUTPUT_START/,/TEST_OUTPUT_END/{/TEST_OUTPUT_START/!{/TEST_OUTPUT_END/!p}}' <<< "$RESULTS_CONTENT")
+
+          echo "TEST_OUTPUT<<EOF" >> $GITHUB_ENV
+          echo "$TEST_OUTPUT" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          extract_metric() {
+            echo "$RESULTS_CONTENT" | grep "^$1=" | cut -d= -f2 || echo "0"
+          }
+          echo "passed=$(extract_metric passed)" >> $GITHUB_OUTPUT
+          echo "failed=$(extract_metric failed)" >> $GITHUB_OUTPUT
+          echo "skipped=$(extract_metric skipped)" >> $GITHUB_OUTPUT
+          echo "errors=$(extract_metric errors)" >> $GITHUB_OUTPUT
+          echo "xfailed=$(extract_metric xfailed)" >> $GITHUB_OUTPUT
+          echo "xpassed=$(extract_metric xpassed)" >> $GITHUB_OUTPUT
+
+          echo "### Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$TEST_OUTPUT" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        shell: bash
+
+      - name: Copy result files from container to runner
+        id: prepare-result-file
+        if: >
+          steps.generate-notebook-html.outcome == 'success' &&
+          steps.run-pytest.outcome == 'success'
+        run: |
+          pwd
+          ls -al
+
+          OUTPUT_NOTEBOOK_HTML="${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          OUTPUT_PYTEST_COVERAGE_XML="${{ env.OUTPUT_PYTEST_COVERAGE_XML }}"
+          OUTPUT_PYTEST_RESULT_XML="${{ env.OUTPUT_PYTEST_RESULT_XML }}"
+          OUTPUT_PYTEST_REPORT_HTML="${{ env.OUTPUT_PYTEST_REPORT_HTML }}"
+          DOCKER_WRITEABLE_DIR="${{ env.DOCKER_WRITEABLE_DIR }}"
+          ARTIFACT_DIR="${{ env.ARTIFACT_DIR }}"
+
+          mkdir -p "$ARTIFACT_DIR" || exit 1
+          docker compose -f "$DOCKER_COMPOSE_FILE" cp backend:"$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML" "$ARTIFACT_DIR"
+          docker compose -f "$DOCKER_COMPOSE_FILE" cp backend:"$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_COVERAGE_XML" "$ARTIFACT_DIR"
+          docker compose -f "$DOCKER_COMPOSE_FILE" cp backend:"$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" "$ARTIFACT_DIR"
+          docker compose -f "$DOCKER_COMPOSE_FILE" cp backend:"$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_REPORT_HTML" "$ARTIFACT_DIR"
+
+          echo '${{ steps.run-pytest.outputs.test_results_json }}' > "$ARTIFACT_DIR/${{ matrix.NOTEBOOK_FILENAME }}.json"
+
+          mkdir -p "${{ github.workspace }}/json-results"
+          echo '${{ steps.run-pytest.outputs.test_results_json }}' > "json-results/${{ matrix.NOTEBOOK_FILENAME }}.json"
+
+          echo "===========Show the contents of dir: $ARTIFACT_DIR================="
+          ls -al "$ARTIFACT_DIR"
+          ls -al "${{ github.workspace }}/json-results"
+
+      - name: Upload the result notebook as artifact
+        if: steps.prepare-result-file.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.set_global_vars.outputs.artifact_name }}
+          path: ${{ env.ARTIFACT_DIR }}/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload JSON test results
+        if: steps.prepare-result-file.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: json-results-${{ matrix.NOTEBOOK_FILENAME }}
+          path: json-results/${{ matrix.NOTEBOOK_FILENAME }}.json
+          retention-days: 30
+
+      - name: Stop containers
+        if: ${{ always() }}
+        run: docker compose -f "$DOCKER_COMPOSE_FILE" down
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker system prune -f
+
+  summary:
+    needs: run-notebook
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query cache via API
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for i in {1..3}; do
+            echo "Attempt $i: Querying cache..."
+            response=$(curl -s \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/caches?key=${{ runner.os }}-docker-")
+
+            if echo "$response" | grep -q "${{ runner.os }}-docker-"; then
+              echo "$response" | jq .
+              exit 0
+            else
+              echo "Cache not found. Retrying in 10 seconds..."
+              sleep 10
+            fi
+          done
+          echo "Error: Cache not found after 3 attempts."
+          exit 1
+
+      - name: Download JSON test results
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-results
+
+      - name: Generate final report
+        run: |
+          echo "### 📊 Notebook Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Notebook | ✅ Passed | ❌ Failed | ⏩ Skipped | 💥 Errors |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|----------|----------|-----------|----------|" >> $GITHUB_STEP_SUMMARY
+
+          notebooks=(
+            "01_scRNA_analysis_preprocessing.ipynb"
+            "02_scRNA_analysis_extended.ipynb"
+            "03_scRNA_analysis_with_pearson_residuals.ipynb"
+            "04_scRNA_analysis_dask_out_of_core.ipynb"
+            "05_scRNA_analysis_multi_GPU.ipynb"
+            "06_scRNA_analysis_90k_brain_example.ipynb"
+            "07_scRNA_analysis_1.3M_brain_example.ipynb"
+          )
+
+          total_passed=0
+          total_failed=0
+          total_skipped=0
+          total_errors=0
+          total_xfailed=0
+          total_xpassed=0
+
+          for notebook in "${notebooks[@]}"; do
+            nb_name=$(basename "$notebook")
+            json_file="downloaded-results/json-results-${notebook}/$notebook.json"
+
+            if [ -f "$json_file" ]; then
+              results=$(cat "$json_file")
+
+              total_passed=$((total_passed + $(echo "$results" | jq -r '.passed')))
+              total_failed=$((total_failed + $(echo "$results" | jq -r '.failed')))
+              total_skipped=$((total_skipped + $(echo "$results" | jq -r '.skipped')))
+              total_errors=$((total_errors + $(echo "$results" | jq -r '.errors')))
+              total_xfailed=$((total_xfailed + $(echo "$results" | jq -r '.xfailed')))
+              total_xpassed=$((total_xpassed + $(echo "$results" | jq -r '.xpassed')))
+
+              echo "| $nb_name | $(echo "$results" | jq -r '.passed') | $(echo "$results" | jq -r '.failed') | $(echo "$results" | jq -r '.skipped') | $(echo "$results" | jq -r '.errors') |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| $nb_name | ❌ Missing data | ❌ Missing data | ❌ Missing data | ❌ Missing data |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          echo "| **Total** | **$total_passed** | **$total_failed** | **$total_skipped** | **$total_errors** |" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📌 Additional Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔶 Expected Failures (XFailed): $total_xfailed" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚠️ Unexpected Passes (XPassed): $total_xpassed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📊 [View Detailed Artifacts]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)" >> $GITHUB_STEP_SUMMARY

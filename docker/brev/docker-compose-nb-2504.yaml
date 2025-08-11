@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   backend:
-    image: nvcr.io/nvidia/rapidsai/notebooks:25.04-cuda12.8-py3.12
+    image: nvcr.io/nvidia/rapidsai/notebooks:${DOCKER_IMG_TAG:-25.04-cuda12.8-py3.12}
     pull_policy: always
     ulimits:
       memlock: -1
@@ -22,12 +20,17 @@ services:
       - "0.0.0.0:8787:8787"      # Dask dashboard
       - "0.0.0.0:8786:8786"      # Dask scheduler
     volumes:
-      - /home/ubuntu/single-cell-analysis-blueprint:/notebooks/
-    user: root
-    working_dir: /notebooks
-    entrypoint: ["/home/rapids/entrypoint.sh"]
-    command: python -m jupyter lab --allow-root --ip=0.0.0.0 --no-browser --NotebookApp.token='' --NotebookApp.password='' --notebook-dir=/notebooks
+      - ${NOTEBOOKS_HOST_PATH:-/home/runner/single-cell-analysis-blueprint/}:/tmp/app/
+    user: rapids
+    working_dir: /home/rapids
+    entrypoint: []
+    command: >
+      sh -c "
+      /home/rapids/entrypoint.sh &
+      sleep 10;
+      (ls -la /tmp/app || true) &&
+      (cp -rf /tmp/app/* /home/rapids/ || true)  &&
+      python -m jupyter lab --allow-root --ip=0.0.0.0 --no-browser
+      --NotebookApp.token='' --NotebookApp.password=''
+      --notebook-dir=/home/rapids/notebooks"
     restart: unless-stopped
-
- 
- 
