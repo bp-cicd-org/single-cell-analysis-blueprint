@@ -91,7 +91,7 @@ runs:
           uname -a
         fi
         
-        # Create OS info JSON
+        # Create OS info JSON (using multiline output to handle special characters)
         OS_INFO_JSON=$(jq -n \
           --arg name "$OS_NAME" \
           --arg release "$OS_RELEASE" \
@@ -99,7 +99,10 @@ runs:
           --arg arch "$(uname -m)" \
           --arg kernel "$(uname -r)" \
           '{name: $name, release: $release, version: $version, architecture: $arch, kernel: $kernel}')
-        echo "os_info=${OS_INFO_JSON}" >> $GITHUB_OUTPUT
+        
+        echo "os_info<<EOF" >> $GITHUB_OUTPUT
+        echo "$OS_INFO_JSON" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
         
         # CPU Information
         echo "=== CPU Information ==="
@@ -121,12 +124,15 @@ runs:
           echo "CPU information tools not available"
         fi
         
-        # Create CPU info JSON
+        # Create CPU info JSON (using multiline output to handle special characters)
         CPU_INFO_JSON=$(jq -n \
           --arg count "$CPU_COUNT" \
           --arg model "$CPU_MODEL" \
           '{count: $count, model: $model}')
-        echo "cpu_info=${CPU_INFO_JSON}" >> $GITHUB_OUTPUT
+        
+        echo "cpu_info<<EOF" >> $GITHUB_OUTPUT
+        echo "$CPU_INFO_JSON" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
         
         # Memory Information
         echo "=== Memory Information ==="
@@ -147,12 +153,15 @@ runs:
           echo "Memory information tools not available"
         fi
         
-        # Create memory info JSON
+        # Create memory info JSON (using multiline output to handle special characters)
         MEMORY_INFO_JSON=$(jq -n \
           --arg total "$TOTAL_MEM" \
           --arg available "$AVAILABLE_MEM" \
           '{total: $total, available: $available}')
-        echo "memory_info=${MEMORY_INFO_JSON}" >> $GITHUB_OUTPUT
+        
+        echo "memory_info<<EOF" >> $GITHUB_OUTPUT
+        echo "$MEMORY_INFO_JSON" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
         
         echo "=== Disk Space ==="
         df -h
@@ -219,14 +228,17 @@ runs:
         # Set outputs
         echo "gpu_available=${GPU_AVAILABLE}" >> $GITHUB_OUTPUT
         
-        # Create GPU info JSON
+        # Create GPU info JSON (using multiline output to handle special characters)
         GPU_INFO_JSON=$(jq -n \
           --arg available "$GPU_AVAILABLE" \
           --arg count "$GPU_COUNT" \
           --arg models "$GPU_MODELS" \
           --arg nvidia_driver "$NVIDIA_DRIVER" \
           '{available: ($available == "true"), count: $count, models: $models, nvidia_driver: $nvidia_driver}')
-        echo "gpu_info=${GPU_INFO_JSON}" >> $GITHUB_OUTPUT
+        
+        echo "gpu_info<<EOF" >> $GITHUB_OUTPUT
+        echo "$GPU_INFO_JSON" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
 
     - name: Check CUDA information
       id: cuda-info
@@ -326,13 +338,16 @@ runs:
         # Set outputs
         echo "docker_available=${DOCKER_AVAILABLE}" >> $GITHUB_OUTPUT
         
-        # Create Docker info JSON
+        # Create Docker info JSON (using multiline output to handle special characters)
         DOCKER_INFO_JSON=$(jq -n \
           --arg available "$DOCKER_AVAILABLE" \
           --arg docker_version "$DOCKER_VERSION" \
           --arg compose_version "$COMPOSE_VERSION" \
           '{available: ($available == "true"), docker_version: $docker_version, compose_version: $compose_version}')
-        echo "docker_info=${DOCKER_INFO_JSON}" >> $GITHUB_OUTPUT
+        
+        echo "docker_info<<EOF" >> $GITHUB_OUTPUT
+        echo "$DOCKER_INFO_JSON" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
 
     - name: Summary report
       shell: bash
@@ -364,3 +379,4 @@ runs:
             echo "DEBUG: Docker Info: ${{ steps.docker-info.outputs.docker_info }}"
           fi
         fi
+
