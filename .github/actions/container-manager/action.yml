@@ -140,8 +140,11 @@ runs:
         fi
         
         set -e
-        if ! docker compose --verbose -f "${{ inputs.compose-file }}" up -d --wait --force-recreate; then
+        echo "INFO: Starting containers with docker compose..."
+        if ! docker compose -f "${{ inputs.compose-file }}" up -d --wait --force-recreate; then
           echo "ERROR: Failed to start containers"
+          echo "INFO: Attempting to get more details..."
+          docker compose -f "${{ inputs.compose-file }}" logs || true
           exit 1
         fi
         
