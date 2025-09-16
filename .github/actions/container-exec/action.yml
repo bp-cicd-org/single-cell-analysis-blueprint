@@ -1,0 +1,457 @@
+name: 'Container Execution Helper'
+description: 'Executes commands and manages files in Docker containers with intelligent error handling'
+
+inputs:
+  action:
+    description: 'Action to perform: exec, copy-to, copy-from, notebook, convert, test'
+    required: true
+  compose-file:
+    description: 'Docker compose file path'
+    required: true
+  service-name:
+    description: 'Service name to execute commands in'
+    required: false
+    default: 'backend'
+  command:
+    description: 'Command to execute (for exec action)'
+    required: false
+  script-content:
+    description: 'Multi-line script content to execute'
+    required: false
+  user:
+    description: 'User to run command as'
+    required: false
+    default: 'rapids'
+  working-dir:
+    description: 'Working directory for command execution'
+    required: false
+    default: '/home/rapids'
+  timeout-minutes:
+    description: 'Command timeout in minutes'
+    required: false
+    default: '30'
+  source-path:
+    description: 'Source path for file operations'
+    required: false
+  dest-path:
+    description: 'Destination path for file operations'
+    required: false
+  notebook-input:
+    description: 'Input notebook path (for notebook action)'
+    required: false
+  notebook-output:
+    description: 'Output notebook path (for notebook action)'
+    required: false
+  notebook-params:
+    description: 'Notebook parameters (JSON format)'
+    required: false
+    default: '{}'
+  output-format:
+    description: 'Output format for convert action (html, pdf, etc.)'
+    required: false
+    default: 'html'
+  test-type:
+    description: 'Test type to run (pytest, unittest, etc.)'
+    required: false
+    default: 'pytest'
+  test-markers:
+    description: 'Test markers to filter'
+    required: false
+  test-coverage:
+    description: 'Enable test coverage reporting'
+    required: false
+    default: 'true'
+  environment-vars:
+    description: 'Additional environment variables (JSON format)'
+    required: false
+    default: '{}'
+  enable-debug:
+    description: 'Enable debug output'
+    required: false
+    default: 'false'
+
+outputs:
+  exit-code:
+    description: 'Exit code of the executed command'
+    value: ${{ steps.execute-command.outputs.exit_code }}
+  execution-time:
+    description: 'Execution time in seconds'
+    value: ${{ steps.track-time.outputs.execution_time }}
+  output-file:
+    description: 'Path to output file (if applicable)'
+    value: ${{ steps.process-output.outputs.output_file }}
+  log-file:
+    description: 'Path to log file'
+    value: ${{ steps.process-output.outputs.log_file }}
+  test-results:
+    description: 'Test results summary (JSON format)'
+    value: ${{ steps.parse-test-results.outputs.test_results }}
+  files-created:
+    description: 'List of files created during execution'
+    value: ${{ steps.process-output.outputs.files_created }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.compose-file }}" ]; then
+          echo "ERROR: compose-file is required"
+          exit 1
+        fi
+        
+        if [ ! -f "${{ inputs.compose-file }}" ]; then
+          echo "ERROR: Compose file not found: ${{ inputs.compose-file }}"
+          exit 1
+        fi
+        
+        VALID_ACTIONS="exec copy-to copy-from notebook convert test"
+        if ! echo "$VALID_ACTIONS" | grep -q "\b${{ inputs.action }}\b"; then
+          echo "ERROR: Invalid action '${{ inputs.action }}'. Valid actions: $VALID_ACTIONS"
+          exit 1
+        fi
+        
+        if [ "${{ inputs.enable-debug }}" = "true" ]; then
+          echo "DEBUG: Container Execution Helper started"
+          echo "DEBUG: Action: ${{ inputs.action }}"
+          echo "DEBUG: Service: ${{ inputs.service-name }}"
+          echo "DEBUG: User: ${{ inputs.user }}"
+          echo "DEBUG: Working Dir: ${{ inputs.working-dir }}"
+        fi
+
+    - name: Track execution time
+      id: track-time
+      shell: bash
+      run: |
+        start_time=$(date +%s)
+        echo "start_time=${start_time}" >> $GITHUB_OUTPUT
+
+    - name: Prepare environment variables
+      shell: bash
+      run: |
+        # Create temporary env file for additional variables
+        ENV_FILE=$(mktemp)
+        echo "env_file=${ENV_FILE}" >> $GITHUB_ENV
+        
+        # Parse and set additional environment variables
+        if [ "${{ inputs.environment-vars }}" != "{}" ]; then
+          echo '${{ inputs.environment-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' > "$ENV_FILE"
+        fi
+
+    - name: Copy files to container
+      if: inputs.action == 'copy-to'
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.source-path }}" ] || [ -z "${{ inputs.dest-path }}" ]; then
+          echo "ERROR: Both source-path and dest-path are required for copy-to action"
+          exit 1
+        fi
+        
+        echo "INFO: Copying files to container..."
+        echo "Source: ${{ inputs.source-path }}"
+        echo "Destination: ${{ inputs.dest-path }}"
+        
+        docker compose -f "${{ inputs.compose-file }}" cp \
+          "${{ inputs.source-path }}" \
+          "${{ inputs.service-name }}:${{ inputs.dest-path }}"
+        
+        echo "SUCCESS: Files copied to container successfully"
+
+    - name: Copy files from container
+      if: inputs.action == 'copy-from'
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.source-path }}" ] || [ -z "${{ inputs.dest-path }}" ]; then
+          echo "ERROR: Both source-path and dest-path are required for copy-from action"
+          exit 1
+        fi
+        
+        echo "INFO: Copying files from container..."
+        echo "Source: ${{ inputs.source-path }}"
+        echo "Destination: ${{ inputs.dest-path }}"
+        
+        docker compose -f "${{ inputs.compose-file }}" cp \
+          "${{ inputs.service-name }}:${{ inputs.source-path }}" \
+          "${{ inputs.dest-path }}"
+        
+        echo "SUCCESS: Files copied from container successfully"
+
+    - name: Execute notebook
+      id: execute-notebook
+      if: inputs.action == 'notebook'
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.notebook-input }}" ] || [ -z "${{ inputs.notebook-output }}" ]; then
+          echo "ERROR: Both notebook-input and notebook-output are required for notebook action"
+          exit 1
+        fi
+        
+        echo "INFO: Executing Jupyter notebook..."
+        echo "Input: ${{ inputs.notebook-input }}"
+        echo "Output: ${{ inputs.notebook-output }}"
+        
+        # Create log file name
+        LOG_FILE="papermill-$(basename '${{ inputs.notebook-input }}' .ipynb).log"
+        echo "log_file=${LOG_FILE}" >> $GITHUB_OUTPUT
+        
+        # Prepare papermill command
+        PAPERMILL_CMD="papermill '${{ inputs.notebook-input }}' '${{ inputs.notebook-output }}' \
+          --log-output \
+          --log-level DEBUG \
+          --progress-bar \
+          --report-mode \
+          --kernel python3"
+        
+        # Add parameters if provided
+        if [ "${{ inputs.notebook-params }}" != "{}" ]; then
+          PARAMS_FILE=$(mktemp)
+          echo '${{ inputs.notebook-params }}' > "$PARAMS_FILE"
+          docker compose -f "${{ inputs.compose-file }}" cp "$PARAMS_FILE" "${{ inputs.service-name }}:/tmp/notebook_params.json"
+          PAPERMILL_CMD="$PAPERMILL_CMD --parameters_file /tmp/notebook_params.json"
+          rm -f "$PARAMS_FILE"
+        fi
+        
+        # Execute notebook
+        timeout $((${{ inputs.timeout-minutes }} * 60)) \
+        docker compose -f "${{ inputs.compose-file }}" exec -T \
+          -u "${{ inputs.user }}" \
+          -w "${{ inputs.working-dir }}" \
+          "${{ inputs.service-name }}" \
+          bash -c "
+            set -euxo pipefail
+            export PYTHONUNBUFFERED=1
+            
+            $PAPERMILL_CMD 2>&1 | tee '${{ inputs.working-dir }}/${LOG_FILE}'
+            
+            echo 'Checking output file...'
+            if [ -s '${{ inputs.notebook-output }}' ]; then
+                echo 'SUCCESS: Notebook executed successfully'
+                exit 0
+            else
+                echo 'ERROR: Output notebook is empty or missing'
+                exit 1
+            fi
+          "
+
+    - name: Convert notebook
+      if: inputs.action == 'convert'
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.notebook-input }}" ] || [ -z "${{ inputs.notebook-output }}" ]; then
+          echo "ERROR: Both notebook-input and notebook-output are required for convert action"
+          exit 1
+        fi
+        
+        echo "INFO: Converting notebook to ${{ inputs.output-format }}..."
+        echo "Input: ${{ inputs.notebook-input }}"
+        echo "Output: ${{ inputs.notebook-output }}"
+        
+        # Create log file name
+        LOG_FILE="nbconvert-$(basename '${{ inputs.notebook-input }}' .ipynb).log"
+        echo "log_file=${LOG_FILE}" >> $GITHUB_OUTPUT
+        
+        # Execute conversion
+        docker compose -f "${{ inputs.compose-file }}" exec -T \
+          -u "${{ inputs.user }}" \
+          -w "${{ inputs.working-dir }}" \
+          "${{ inputs.service-name }}" \
+          bash -c "
+            jupyter nbconvert --to ${{ inputs.output-format }} '${{ inputs.notebook-input }}' \
+              --output '${{ inputs.notebook-output }}' \
+              --output-dir '${{ inputs.working-dir }}' \
+              > '${{ inputs.working-dir }}/${LOG_FILE}' 2>&1
+            
+            echo 'Checking output file...'
+            if [ -s '${{ inputs.notebook-output }}' ]; then
+                echo 'SUCCESS: Notebook converted successfully'
+            else
+                echo 'ERROR: Converted file is empty or missing'
+                exit 1
+            fi
+          "
+
+    - name: Execute tests
+      id: execute-tests
+      if: inputs.action == 'test'
+      shell: bash
+      run: |
+        echo "INFO: Executing tests with ${{ inputs.test-type }}..."
+        
+        # Create log file name
+        LOG_FILE="test-results.log"
+        echo "log_file=${LOG_FILE}" >> $GITHUB_OUTPUT
+        
+        # Prepare test command
+        TEST_CMD="${{ inputs.test-type }}"
+        
+        if [ "${{ inputs.test-markers }}" != "" ]; then
+          TEST_CMD="$TEST_CMD -m '${{ inputs.test-markers }}'"
+        fi
+        
+        if [ "${{ inputs.test-coverage }}" = "true" ]; then
+          TEST_CMD="$TEST_CMD --cov=./ --cov-report=xml:coverage.xml"
+        fi
+        
+        TEST_CMD="$TEST_CMD --junitxml=test-results.xml --html=test-report.html --self-contained-html"
+        
+        # Execute tests
+        docker compose -f "${{ inputs.compose-file }}" exec -T \
+          -u "${{ inputs.user }}" \
+          -w "${{ inputs.working-dir }}" \
+          "${{ inputs.service-name }}" \
+          bash -c "
+            set -euxo pipefail
+            
+            echo 'Running tests...'
+            $TEST_CMD 2>&1 | tee '${{ inputs.working-dir }}/${LOG_FILE}' || echo 'Tests completed with exit code: \$?'
+            
+            echo 'Test execution finished'
+          "
+
+    - name: Execute custom command
+      id: execute-command
+      if: inputs.action == 'exec'
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.command }}" ] && [ -z "${{ inputs.script-content }}" ]; then
+          echo "ERROR: Either command or script-content is required for exec action"
+          exit 1
+        fi
+        
+        echo "INFO: Executing custom command in container..."
+        
+        # Create log file name
+        LOG_FILE="exec-$(date +%s).log"
+        echo "log_file=${LOG_FILE}" >> $GITHUB_OUTPUT
+        
+        if [ -n "${{ inputs.script-content }}" ]; then
+          # Execute script content
+          echo "INFO: Executing script content..."
+          SCRIPT_FILE=$(mktemp)
+          cat > "$SCRIPT_FILE" <<'SCRIPT_EOF'
+          ${{ inputs.script-content }}
+          SCRIPT_EOF
+          
+          timeout $((${{ inputs.timeout-minutes }} * 60)) \
+          docker compose -f "${{ inputs.compose-file }}" exec -T \
+            -u "${{ inputs.user }}" \
+            -w "${{ inputs.working-dir }}" \
+            "${{ inputs.service-name }}" \
+            bash -s < "$SCRIPT_FILE" 2>&1 | tee "$LOG_FILE"
+          
+          EXIT_CODE=${PIPESTATUS[0]}
+          rm -f "$SCRIPT_FILE"
+        else
+          # Execute single command
+          echo "INFO: Executing command: ${{ inputs.command }}"
+          timeout $((${{ inputs.timeout-minutes }} * 60)) \
+          docker compose -f "${{ inputs.compose-file }}" exec -T \
+            -u "${{ inputs.user }}" \
+            -w "${{ inputs.working-dir }}" \
+            "${{ inputs.service-name }}" \
+            bash -c "${{ inputs.command }}" 2>&1 | tee "$LOG_FILE"
+          
+          EXIT_CODE=${PIPESTATUS[0]}
+        fi
+        
+        echo "exit_code=${EXIT_CODE}" >> $GITHUB_OUTPUT
+        echo "Command completed with exit code: ${EXIT_CODE}"
+
+    - name: Process output and logs
+      id: process-output
+      shell: bash
+      run: |
+        echo "INFO: Processing execution output..."
+        
+        # Set output file based on action
+        case "${{ inputs.action }}" in
+          "notebook")
+            OUTPUT_FILE="${{ inputs.notebook-output }}"
+            LOG_FILE="${{ steps.execute-notebook.outputs.log_file }}"
+            ;;
+          "convert")
+            OUTPUT_FILE="${{ inputs.notebook-output }}"
+            LOG_FILE="${{ steps.execute-notebook.outputs.log_file }}"
+            ;;
+          "test")
+            OUTPUT_FILE="test-report.html"
+            LOG_FILE="${{ steps.execute-tests.outputs.log_file }}"
+            ;;
+          "exec")
+            OUTPUT_FILE=""
+            LOG_FILE="${{ steps.execute-command.outputs.log_file }}"
+            ;;
+          *)
+            OUTPUT_FILE=""
+            LOG_FILE=""
+            ;;
+        esac
+        
+        echo "output_file=${OUTPUT_FILE}" >> $GITHUB_OUTPUT
+        echo "log_file=${LOG_FILE}" >> $GITHUB_OUTPUT
+        
+        # List files created in working directory
+        FILES_CREATED=$(docker compose -f "${{ inputs.compose-file }}" exec -T \
+          "${{ inputs.service-name }}" \
+          find "${{ inputs.working-dir }}" -maxdepth 1 -type f -newer "${{ inputs.working-dir }}" 2>/dev/null | tr '\n' ',' || echo "")
+        echo "files_created=${FILES_CREATED}" >> $GITHUB_OUTPUT
+
+    - name: Parse test results
+      id: parse-test-results
+      if: inputs.action == 'test'
+      shell: bash
+      run: |
+        echo "INFO: Parsing test results..."
+        
+        # Extract test results from XML if available
+        RESULTS_FILE=$(mktemp)
+        docker compose -f "${{ inputs.compose-file }}" exec -T \
+          "${{ inputs.service-name }}" \
+          cat "${{ inputs.working-dir }}/test-results.xml" > "$RESULTS_FILE" 2>/dev/null || echo "No test results XML found"
+        
+        if [ -s "$RESULTS_FILE" ]; then
+          # Parse XML results
+          PASSED=$(xmllint --xpath 'count(//testcase[not(skipped) and not(failure) and not(error)])' "$RESULTS_FILE" 2>/dev/null || echo "0")
+          FAILED=$(xmllint --xpath 'count(//testcase[failure])' "$RESULTS_FILE" 2>/dev/null || echo "0")
+          ERRORS=$(xmllint --xpath 'count(//testcase[error])' "$RESULTS_FILE" 2>/dev/null || echo "0")
+          SKIPPED=$(xmllint --xpath 'count(//testcase[skipped])' "$RESULTS_FILE" 2>/dev/null || echo "0")
+          
+          TEST_RESULTS="{\"passed\":${PASSED},\"failed\":${FAILED},\"errors\":${ERRORS},\"skipped\":${SKIPPED}}"
+          echo "test_results=${TEST_RESULTS}" >> $GITHUB_OUTPUT
+        else
+          echo "test_results={\"error\":\"No test results available\"}" >> $GITHUB_OUTPUT
+        fi
+        
+        rm -f "$RESULTS_FILE"
+
+    - name: Calculate execution time
+      shell: bash
+      run: |
+        start_time="${{ steps.track-time.outputs.start_time }}"
+        end_time=$(date +%s)
+        execution_time=$((end_time - start_time))
+        echo "execution_time=${execution_time}" >> $GITHUB_OUTPUT
+        echo "INFO: Execution completed in ${execution_time} seconds"
+
+    - name: Summary
+      shell: bash
+      run: |
+        echo "SUMMARY: Container Execution Helper Summary:"
+        echo "   Action: ${{ inputs.action }}"
+        echo "   Service: ${{ inputs.service-name }}"
+        echo "   User: ${{ inputs.user }}"
+        echo "   Working Dir: ${{ inputs.working-dir }}"
+        echo "   Execution Time: ${{ steps.track-time.outputs.execution_time }} seconds"
+        
+        if [ -n "${{ steps.process-output.outputs.output_file }}" ]; then
+          echo "   Output File: ${{ steps.process-output.outputs.output_file }}"
+        fi
+        
+        if [ -n "${{ steps.process-output.outputs.log_file }}" ]; then
+          echo "   Log File: ${{ steps.process-output.outputs.log_file }}"
+        fi
+        
+        if [ "${{ inputs.action }}" = "exec" ]; then
+          echo "   Exit Code: ${{ steps.execute-command.outputs.exit_code }}"
+        fi

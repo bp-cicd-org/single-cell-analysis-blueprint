@@ -1,0 +1,256 @@
+name: 'Docker Cache Manager'
+description: 'Manages Docker image caching with intelligent pull/load strategies'
+
+inputs:
+  image-name:
+    description: 'Docker image name (e.g., nvcr.io/nvidia/rapidsai/notebooks)'
+    required: true
+  image-tag:
+    description: 'Docker image tag (e.g., 25.06-cuda12.8-py3.12)'
+    required: true
+  cache-dir:
+    description: 'Cache directory path'
+    required: false
+    default: 'docker-pull-cache'
+  writeable-dir:
+    description: 'Writeable directory path'
+    required: false
+    default: '/tmp'
+  max-retries:
+    description: 'Maximum pull retries'
+    required: false
+    default: '2'
+  timeout-minutes:
+    description: 'Pull timeout in minutes'
+    required: false
+    default: '30'
+  runner-os:
+    description: 'Runner OS for cache key generation'
+    required: false
+    default: ${{ runner.os }}
+  enable-debug:
+    description: 'Enable debug output'
+    required: false
+    default: 'false'
+
+outputs:
+  cache-hit:
+    description: 'Whether cache was hit (true/false)'
+    value: ${{ steps.cache-docker-image.outputs.cache-hit }}
+  cache-key:
+    description: 'Generated cache key'
+    value: ${{ steps.generate-cache-vars.outputs.cache_key }}
+  image-cache-name:
+    description: 'Generated image cache filename'
+    value: ${{ steps.generate-cache-vars.outputs.docker_img_cache_name }}
+  pull-time:
+    description: 'Time taken to pull/load image in seconds'
+    value: ${{ steps.pull-docker-image.outputs.pull_time }}
+  image-size:
+    description: 'Image size in human readable format'
+    value: ${{ steps.verify-cache.outputs.image_size }}
+  operation:
+    description: 'Operation performed (cached-load, fresh-pull, already-exists)'
+    value: ${{ steps.determine-operation.outputs.operation }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Generate cache variables
+      id: generate-cache-vars
+      shell: bash
+      run: |
+        # Generate cache-safe filename from image name and tag
+        DOCKER_IMG_CACHE_NAME=$(echo "${{ inputs.image-name }}:${{ inputs.image-tag }}" | sed 's/[\/:@.]/_/g')
+        echo "Cache filename: ${DOCKER_IMG_CACHE_NAME}.tar"
+        echo "docker_img_cache_name=${DOCKER_IMG_CACHE_NAME}" >> $GITHUB_OUTPUT
+        
+        # Generate cache key
+        CACHE_KEY="${{ inputs.runner-os }}-docker-$DOCKER_IMG_CACHE_NAME"
+        echo "cache_key=${CACHE_KEY}" >> $GITHUB_OUTPUT
+        
+        if [ "${{ inputs.enable-debug }}" = "true" ]; then
+          echo "::debug::Generated cache key: ${CACHE_KEY}"
+          echo "::debug::Generated cache name: ${DOCKER_IMG_CACHE_NAME}"
+        fi
+
+    - name: Ensure cache directory exists
+      shell: bash
+      run: |
+        CACHE_PATH="${{ inputs.writeable-dir }}/${{ inputs.cache-dir }}"
+        echo "Creating cache directory: $CACHE_PATH"
+        mkdir -p "$CACHE_PATH"
+        sudo chown -R $(id -u):$(id -g) "$CACHE_PATH"
+        
+        if [ "${{ inputs.enable-debug }}" = "true" ]; then
+          echo "::debug::Cache directory permissions:"
+          ls -ld "$CACHE_PATH"
+        fi
+
+    - name: Cache Docker image
+      id: cache-docker-image
+      if: always()
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.cache-dir }}
+        key: "${{ steps.generate-cache-vars.outputs.cache_key }}"
+        restore-keys: |
+          ${{ inputs.runner-os }}-docker-
+
+    - name: Debug cache info
+      if: inputs.enable-debug == 'true'
+      shell: bash
+      run: |
+        echo "::debug::Primary Key: ${{ steps.cache-docker-image.outputs.cache-primary-key || 'N/A' }}"
+        echo "::debug::Cache Hit: ${{ steps.cache-docker-image.outputs.cache-hit || 'false' }}"
+        echo "::debug::Cache Path: ${{ inputs.writeable-dir }}/${{ inputs.cache-dir }}"
+        
+        if [ -d "${{ inputs.cache-dir }}" ]; then
+          echo "::debug::Cache directory contents:"
+          ls -la "${{ inputs.cache-dir }}" || echo "Cache directory empty or inaccessible"
+        fi
+
+    - name: Load cached docker image
+      id: load-cached-image
+      if: steps.cache-docker-image.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        DOCKER_CACHE_DIR="${{ inputs.cache-dir }}"
+        DOCKER_IMG_CACHE_NAME="${{ steps.generate-cache-vars.outputs.docker_img_cache_name }}"
+        CACHE_FILE="${DOCKER_CACHE_DIR}/${DOCKER_IMG_CACHE_NAME}.tar"
+        
+        echo "Checking cached file: $CACHE_FILE"
+        
+        if [ -f "$CACHE_FILE" ]; then
+          echo "SUCCESS: Cache file exists, loading Docker image from cache..."
+          start_time=$(date +%s)
+          
+          if docker load -i "$CACHE_FILE"; then
+            end_time=$(date +%s)
+            load_time=$((end_time - start_time))
+            echo "SUCCESS: Successfully loaded image from cache in ${load_time} seconds"
+            echo "load_time=${load_time}" >> $GITHUB_OUTPUT
+            echo "loaded=true" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR: Failed to load image from cache, will need to pull"
+            echo "loaded=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "WARNING: Cache file not found: $CACHE_FILE"
+          echo "loaded=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Pull docker image
+      id: pull-docker-image
+      if: steps.cache-docker-image.outputs.cache-hit != 'true' || steps.load-cached-image.outputs.loaded != 'true'
+      shell: bash
+      run: |
+        start_time=$(date +%s)
+        
+        DOCKER_IMG_NAME="${{ inputs.image-name }}"
+        DOCKER_IMG_TAG="${{ inputs.image-tag }}"
+        DOCKER_CACHE_DIR="${{ inputs.cache-dir }}"
+        DOCKER_IMG_CACHE_NAME="${{ steps.generate-cache-vars.outputs.docker_img_cache_name }}"
+        FULL_IMAGE="${DOCKER_IMG_NAME}:${DOCKER_IMG_TAG}"
+        
+        echo "Docker image: $FULL_IMAGE"
+        
+        # Check if image already exists locally
+        if docker image inspect "$FULL_IMAGE" >/dev/null 2>&1; then
+          echo "SUCCESS: Image already exists locally, skipping pull"
+          end_time=$(date +%s)
+          pull_time=$((end_time - start_time))
+          echo "pull_time=${pull_time}" >> $GITHUB_OUTPUT
+          echo "operation=already-exists" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        echo "INFO: Pulling Docker image from remote registry..."
+        
+        # Attempt to pull with retries
+        MAX_RETRIES=${{ inputs.max-retries }}
+        RETRY_COUNT=0
+        
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+          echo "Pull attempt $((RETRY_COUNT + 1))/$MAX_RETRIES"
+          
+          if timeout $((${{ inputs.timeout-minutes }} * 60)) docker pull "$FULL_IMAGE"; then
+            echo "SUCCESS: Successfully pulled image on attempt $((RETRY_COUNT + 1))"
+            break
+          else
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+              echo "WARNING: Pull failed, retrying in 10 seconds..."
+              sleep 10
+            else
+              echo "ERROR: All pull attempts failed after $MAX_RETRIES retries"
+              exit 1
+            fi
+          fi
+        done
+        
+        # Save image to cache
+        echo "INFO: Saving image to cache..."
+        mkdir -p "${DOCKER_CACHE_DIR}"
+        
+        if docker save "$FULL_IMAGE" -o "${DOCKER_CACHE_DIR}/${DOCKER_IMG_CACHE_NAME}.tar"; then
+          echo "SUCCESS: Successfully saved image to cache"
+        else
+          echo "WARNING: Failed to save image to cache, but pull was successful"
+        fi
+        
+        end_time=$(date +%s)
+        pull_time=$((end_time - start_time))
+        echo "SUCCESS: Total operation time: ${pull_time} seconds"
+        echo "pull_time=${pull_time}" >> $GITHUB_OUTPUT
+        echo "operation=fresh-pull" >> $GITHUB_OUTPUT
+
+    - name: Determine operation performed
+      id: determine-operation
+      shell: bash
+      run: |
+        if [ "${{ steps.cache-docker-image.outputs.cache-hit }}" = "true" ] && [ "${{ steps.load-cached-image.outputs.loaded }}" = "true" ]; then
+          echo "operation=cached-load" >> $GITHUB_OUTPUT
+        elif [ "${{ steps.pull-docker-image.outputs.operation }}" = "already-exists" ]; then
+          echo "operation=already-exists" >> $GITHUB_OUTPUT
+        else
+          echo "operation=fresh-pull" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Verify cache and get image info
+      id: verify-cache
+      shell: bash
+      run: |
+        DOCKER_CACHE_DIR="${{ inputs.cache-dir }}"
+        
+        if [ -d "$DOCKER_CACHE_DIR" ] && [ "$(ls -A $DOCKER_CACHE_DIR 2>/dev/null)" ]; then
+          echo "INFO: Cache directory contents:"
+          ls -lh "$DOCKER_CACHE_DIR"
+          
+          # Get total size
+          TOTAL_SIZE=$(du -sh "$DOCKER_CACHE_DIR" | cut -f1)
+          echo "INFO: Total cache size: $TOTAL_SIZE"
+          echo "image_size=$TOTAL_SIZE" >> $GITHUB_OUTPUT
+        else
+          echo "WARNING: Cache directory is empty or doesn't exist"
+          echo "image_size=0" >> $GITHUB_OUTPUT
+        fi
+        
+        # Verify image is available
+        FULL_IMAGE="${{ inputs.image-name }}:${{ inputs.image-tag }}"
+        if docker image inspect "$FULL_IMAGE" >/dev/null 2>&1; then
+          echo "SUCCESS: Image $FULL_IMAGE is available and ready to use"
+        else
+          echo "ERROR: Image $FULL_IMAGE is not available"
+          exit 1
+        fi
+
+    - name: Summary
+      shell: bash
+      run: |
+        echo "SUMMARY: Docker Cache Manager Summary:"
+        echo "   Image: ${{ inputs.image-name }}:${{ inputs.image-tag }}"
+        echo "   Operation: ${{ steps.determine-operation.outputs.operation }}"
+        echo "   Cache Hit: ${{ steps.cache-docker-image.outputs.cache-hit }}"
+        echo "   Time: ${{ steps.pull-docker-image.outputs.pull_time || steps.load-cached-image.outputs.load_time || '0' }} seconds"
+        echo "   Size: ${{ steps.verify-cache.outputs.image_size }}"

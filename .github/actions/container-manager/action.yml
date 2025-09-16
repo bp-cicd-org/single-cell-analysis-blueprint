@@ -1,0 +1,286 @@
+name: 'Container Lifecycle Manager'
+description: 'Manages Docker container lifecycle with intelligent start/stop/status operations'
+
+inputs:
+  action:
+    description: 'Action to perform: start, stop, restart, status, logs, exec, prepare'
+    required: true
+  compose-file:
+    description: 'Docker compose file path'
+    required: true
+  service-name:
+    description: 'Service name to manage'
+    required: false
+    default: 'backend'
+  wait-timeout:
+    description: 'Wait timeout for container readiness in seconds'
+    required: false
+    default: '300'
+  environment-vars:
+    description: 'Additional environment variables (JSON format)'
+    required: false
+    default: '{}'
+  image-tag:
+    description: 'Docker image tag to use'
+    required: false
+  host-path:
+    description: 'Host path to mount'
+    required: false
+  command:
+    description: 'Command to execute (for exec action)'
+    required: false
+  user:
+    description: 'User to run command as (for exec action)'
+    required: false
+    default: 'rapids'
+  working-dir:
+    description: 'Working directory for exec command'
+    required: false
+    default: '/home/rapids'
+  log-lines:
+    description: 'Number of log lines to retrieve'
+    required: false
+    default: '200'
+  enable-debug:
+    description: 'Enable debug output'
+    required: false
+    default: 'false'
+
+outputs:
+  container-id:
+    description: 'Container ID'
+    value: ${{ steps.get-container-info.outputs.container_id }}
+  container-status:
+    description: 'Container status'
+    value: ${{ steps.get-container-info.outputs.container_status }}
+  start-time:
+    description: 'Container start time in seconds'
+    value: ${{ steps.start-container.outputs.start_time }}
+  operation-time:
+    description: 'Time taken for operation in seconds'
+    value: ${{ steps.track-time.outputs.operation_time }}
+  logs-file:
+    description: 'Path to logs file (if logs action)'
+    value: ${{ steps.get-logs.outputs.logs_file }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.compose-file }}" ]; then
+          echo "ERROR: compose-file is required"
+          exit 1
+        fi
+        
+        if [ ! -f "${{ inputs.compose-file }}" ]; then
+          echo "ERROR: Compose file not found: ${{ inputs.compose-file }}"
+          exit 1
+        fi
+        
+        VALID_ACTIONS="start stop restart status logs exec prepare"
+        if ! echo "$VALID_ACTIONS" | grep -q "\b${{ inputs.action }}\b"; then
+          echo "ERROR: Invalid action '${{ inputs.action }}'. Valid actions: $VALID_ACTIONS"
+          exit 1
+        fi
+        
+        if [ "${{ inputs.enable-debug }}" = "true" ]; then
+          echo "DEBUG: Action: ${{ inputs.action }}"
+          echo "DEBUG: Compose file: ${{ inputs.compose-file }}"
+          echo "DEBUG: Service: ${{ inputs.service-name }}"
+        fi
+
+    - name: Track operation time
+      id: track-time
+      shell: bash
+      run: |
+        start_time=$(date +%s)
+        echo "start_time=${start_time}" >> $GITHUB_OUTPUT
+
+    - name: Setup environment variables
+      shell: bash
+      run: |
+        # Set up standard environment variables
+        if [ -n "${{ inputs.image-tag }}" ]; then
+          export DOCKER_IMG_TAG="${{ inputs.image-tag }}"
+          echo "DOCKER_IMG_TAG=${{ inputs.image-tag }}" >> $GITHUB_ENV
+        fi
+        
+        if [ -n "${{ inputs.host-path }}" ]; then
+          export NOTEBOOKS_HOST_PATH="${{ inputs.host-path }}"
+          echo "NOTEBOOKS_HOST_PATH=${{ inputs.host-path }}" >> $GITHUB_ENV
+        fi
+        
+        # Set compose timeout
+        export COMPOSE_HTTP_TIMEOUT=${{ inputs.wait-timeout }}
+        echo "COMPOSE_HTTP_TIMEOUT=${{ inputs.wait-timeout }}" >> $GITHUB_ENV
+
+    - name: Start container
+      id: start-container
+      if: inputs.action == 'start' || inputs.action == 'restart'
+      shell: bash
+      run: |
+        start_time=$(date +%s)
+        
+        if [ "${{ inputs.action }}" = "restart" ]; then
+          echo "INFO: Stopping existing containers first..."
+          docker compose -f "${{ inputs.compose-file }}" down
+        fi
+        
+        echo "INFO: Starting container with compose file: ${{ inputs.compose-file }}"
+        
+        if [ "${{ inputs.enable-debug }}" = "true" ]; then
+          echo "DEBUG: Current docker images:"
+          docker images -a
+          echo "DEBUG: Environment variables:"
+          env | grep -E "(DOCKER_IMG_TAG|NOTEBOOKS_HOST_PATH|COMPOSE_HTTP_TIMEOUT)"
+          echo "DEBUG: Current directory contents:"
+          pwd && ls -al ./
+        fi
+        
+        set -e
+        if ! docker compose --verbose -f "${{ inputs.compose-file }}" up -d --wait --force-recreate; then
+          echo "ERROR: Failed to start containers"
+          exit 1
+        fi
+        
+        end_time=$(date +%s)
+        start_duration=$((end_time - start_time))
+        echo "SUCCESS: Container started successfully in ${start_duration} seconds"
+        echo "start_time=${start_duration}" >> $GITHUB_OUTPUT
+
+    - name: Stop container
+      if: inputs.action == 'stop'
+      shell: bash
+      run: |
+        echo "INFO: Stopping containers..."
+        docker compose -f "${{ inputs.compose-file }}" down
+        echo "SUCCESS: Containers stopped successfully"
+
+    - name: Get container status
+      id: get-container-info
+      if: inputs.action == 'status' || inputs.action == 'start' || inputs.action == 'restart'
+      shell: bash
+      run: |
+        echo "INFO: Getting container status..."
+        docker ps -a
+        
+        # Get specific container info
+        CONTAINER_ID=$(docker compose -f "${{ inputs.compose-file }}" ps -q "${{ inputs.service-name }}" 2>/dev/null || echo "")
+        if [ -n "$CONTAINER_ID" ]; then
+          CONTAINER_STATUS=$(docker inspect "$CONTAINER_ID" --format='{{.State.Status}}' 2>/dev/null || echo "unknown")
+          echo "container_id=${CONTAINER_ID}" >> $GITHUB_OUTPUT
+          echo "container_status=${CONTAINER_STATUS}" >> $GITHUB_OUTPUT
+          echo "INFO: Container ${{ inputs.service-name }} (ID: ${CONTAINER_ID}) status: ${CONTAINER_STATUS}"
+        else
+          echo "WARNING: Container ${{ inputs.service-name }} not found"
+          echo "container_id=" >> $GITHUB_OUTPUT
+          echo "container_status=not_found" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Get container logs
+      id: get-logs
+      if: inputs.action == 'logs' || inputs.action == 'status'
+      shell: bash
+      run: |
+        LOGS_FILE="docker-logs-${{ inputs.service-name }}.txt"
+        echo "INFO: Retrieving container logs (last ${{ inputs.log-lines }} lines)..."
+        
+        if docker compose -f "${{ inputs.compose-file }}" logs --no-color --tail=${{ inputs.log-lines }} "${{ inputs.service-name }}" > "$LOGS_FILE" 2>&1; then
+          echo "SUCCESS: Logs saved to $LOGS_FILE"
+          echo "logs_file=${LOGS_FILE}" >> $GITHUB_OUTPUT
+          
+          # Show preview of logs
+          echo "INFO: Log preview (first 500KB):"
+          head -c 500000 "$LOGS_FILE"
+        else
+          echo "WARNING: Failed to retrieve logs for service ${{ inputs.service-name }}"
+          echo "logs_file=" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Prepare container environment
+      if: inputs.action == 'prepare'
+      shell: bash
+      run: |
+        echo "INFO: Preparing container environment for service ${{ inputs.service-name }}..."
+        
+        # Install system packages as root
+        docker compose -f "${{ inputs.compose-file }}" exec -u root "${{ inputs.service-name }}" bash -c '
+          apt-get update
+          apt-get install -y libxml2-utils
+          apt-get clean
+        '
+        
+        # Setup user environment
+        docker compose -f "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" bash <<'EOF'
+        set -euxo pipefail
+        
+        whoami
+        pwd
+        ls -al ./
+        ls -al ./notebooks/ || echo "No notebooks directory found"
+        ls -al /tmp/app || echo "No /tmp/app directory found"
+        
+        # Copy files from /tmp/app if it exists
+        if [ -d "/tmp/app" ]; then
+          echo "INFO: Copying files from /tmp/app to home directory"
+          cp -rf /tmp/app/* /home/rapids/ || echo "WARNING: Failed to copy some files"
+          ls -al ./
+          ls -al ./notebooks || echo "No notebooks directory found after copy"
+        fi
+        
+        # Upgrade pip
+        python -m pip install --upgrade pip --user || echo "WARNING: Failed to upgrade pip"
+        
+        echo "SUCCESS: Container environment prepared"
+        EOF
+
+    - name: Execute command in container
+      if: inputs.action == 'exec'
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.command }}" ]; then
+          echo "ERROR: Command is required for exec action"
+          exit 1
+        fi
+        
+        echo "INFO: Executing command in container ${{ inputs.service-name }}..."
+        echo "Command: ${{ inputs.command }}"
+        echo "User: ${{ inputs.user }}"
+        echo "Working directory: ${{ inputs.working-dir }}"
+        
+        docker compose -f "${{ inputs.compose-file }}" exec \
+          -u "${{ inputs.user }}" \
+          -w "${{ inputs.working-dir }}" \
+          "${{ inputs.service-name }}" \
+          bash -c "${{ inputs.command }}"
+
+    - name: Calculate operation time
+      shell: bash
+      run: |
+        start_time="${{ steps.track-time.outputs.start_time }}"
+        end_time=$(date +%s)
+        operation_time=$((end_time - start_time))
+        echo "operation_time=${operation_time}" >> $GITHUB_OUTPUT
+        echo "INFO: Total operation time: ${operation_time} seconds"
+
+    - name: Summary
+      shell: bash
+      run: |
+        echo "SUMMARY: Container Lifecycle Manager Summary:"
+        echo "   Action: ${{ inputs.action }}"
+        echo "   Service: ${{ inputs.service-name }}"
+        echo "   Compose File: ${{ inputs.compose-file }}"
+        
+        if [ "${{ inputs.action }}" = "start" ] || [ "${{ inputs.action }}" = "restart" ]; then
+          echo "   Container ID: ${{ steps.get-container-info.outputs.container_id }}"
+          echo "   Container Status: ${{ steps.get-container-info.outputs.container_status }}"
+          echo "   Start Time: ${{ steps.start-container.outputs.start_time }} seconds"
+        fi
+        
+        if [ "${{ inputs.action }}" = "logs" ]; then
+          echo "   Logs File: ${{ steps.get-logs.outputs.logs_file }}"
+        fi
+        
+        echo "   Total Operation Time: ${{ steps.track-time.outputs.operation_time }} seconds"

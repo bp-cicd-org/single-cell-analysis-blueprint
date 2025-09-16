@@ -1,19 +1,105 @@
 name: 'Setup Environment'
-description: 'Configures Python, and checks disk space'
+description: 'Configures Python environment with enhanced caching and validation'
+
 inputs:
   python-version:
-    description: 'Python version'
+    description: 'Python version to install'
     required: false
     default: '3.12'
   check-disk:
     description: 'Whether to check disk space'
     required: false
     default: 'true'
+  verify-python:
+    description: 'Whether to verify Python installation and version'
+    required: false
+    default: 'true'
+  install-dependencies:
+    description: 'Whether to install dependencies from requirements files'
+    required: false
+    default: 'false'
+  cache-key-suffix:
+    description: 'Additional suffix for cache key customization'
+    required: false
+    default: ''
+  enable-debug:
+    description: 'Enable debug output'
+    required: false
+    default: 'false'
+
+outputs:
+  python-version:
+    description: 'Installed Python version'
+    value: ${{ steps.verify-python.outputs.python_version }}
+  python-path:
+    description: 'Python executable path'
+    value: ${{ steps.verify-python.outputs.python_path }}
+  pip-version:
+    description: 'Installed pip version'
+    value: ${{ steps.verify-python.outputs.pip_version }}
+  cache-hit:
+    description: 'Whether cache was hit for dependencies'
+    value: ${{ steps.python-setup.outputs.cache-hit }}
+  setup-time:
+    description: 'Time taken for setup in seconds'
+    value: ${{ steps.track-time.outputs.setup_time }}
+  disk-space:
+    description: 'Available disk space information'
+    value: ${{ steps.check-disk.outputs.disk_info }}
 
 runs:
   using: "composite"
   steps:
-    - name: Setup Python ${{ inputs.python-version }}
+    - name: Track setup time
+      id: track-time
+      shell: bash
+      run: |
+        start_time=$(date +%s)
+        echo "start_time=${start_time}" >> $GITHUB_OUTPUT
+
+    - name: Generate enhanced cache key
+      id: cache-key
+      shell: bash
+      run: |
+        # Generate more precise cache key based on multiple factors
+        PYTHON_VERSION="${{ inputs.python-version }}"
+        RUNNER_OS="${{ runner.os }}"
+        RUNNER_ARCH="${{ runner.arch }}"
+        
+        # Include requirements file hashes if they exist
+        REQ_HASH=""
+        if [ -f "requirements.txt" ]; then
+          REQ_HASH=$(sha256sum requirements.txt | cut -d' ' -f1 | head -c 8)
+        fi
+        
+        # Include notebook dependency hashes
+        NOTEBOOK_HASH=""
+        if find . -name "*.ipynb" -type f | head -1 | xargs grep -l "pip install\|!pip\|%pip" 2>/dev/null; then
+          NOTEBOOK_HASH=$(find . -name "*.ipynb" -type f -exec grep -l "pip install\|!pip\|%pip" {} \; 2>/dev/null | xargs cat | sha256sum | cut -d' ' -f1 | head -c 8)
+        fi
+        
+        # Combine all factors for cache key
+        CACHE_KEY="python-${PYTHON_VERSION}-${RUNNER_OS}-${RUNNER_ARCH}"
+        if [ -n "$REQ_HASH" ]; then
+          CACHE_KEY="${CACHE_KEY}-req-${REQ_HASH}"
+        fi
+        if [ -n "$NOTEBOOK_HASH" ]; then
+          CACHE_KEY="${CACHE_KEY}-nb-${NOTEBOOK_HASH}"
+        fi
+        if [ -n "${{ inputs.cache-key-suffix }}" ]; then
+          CACHE_KEY="${CACHE_KEY}-${{ inputs.cache-key-suffix }}"
+        fi
+        
+        echo "cache_key=${CACHE_KEY}" >> $GITHUB_OUTPUT
+        
+        if [ "${{ inputs.enable-debug }}" = "true" ]; then
+          echo "DEBUG: Generated cache key: ${CACHE_KEY}"
+          echo "DEBUG: Requirements hash: ${REQ_HASH:-none}"
+          echo "DEBUG: Notebook hash: ${NOTEBOOK_HASH:-none}"
+        fi
+
+    - name: Setup Python with enhanced caching
+      id: python-setup
       if: ${{ inputs.python-version != 'false' }}
       uses: actions/setup-python@v5
       with:
@@ -21,14 +107,163 @@ runs:
         cache: 'pip'
         cache-dependency-path: |
           requirements.txt
+          **/requirements*.txt
           **/*.ipynb
+          pyproject.toml
+          poetry.lock
+          Pipfile.lock
 
-    - name: Check Disk
-      if: ${{ inputs.check-disk == 'true' }}
-      run: df -h
+    - name: Verify Python installation
+      id: verify-python
+      if: ${{ inputs.verify-python == 'true' && inputs.python-version != 'false' }}
       shell: bash
-
-    - name: Print Environment
       run: |
-        echo "Python: $(python --version || echo 'Not installed')"
+        echo "INFO: Verifying Python installation..."
+        
+        # Check Python installation
+        if command -v python &> /dev/null; then
+          PYTHON_VERSION=$(python --version 2>&1 | cut -d' ' -f2)
+          PYTHON_PATH=$(which python)
+          echo "python_version=${PYTHON_VERSION}" >> $GITHUB_OUTPUT
+          echo "python_path=${PYTHON_PATH}" >> $GITHUB_OUTPUT
+          echo "SUCCESS: Python ${PYTHON_VERSION} found at ${PYTHON_PATH}"
+        else
+          echo "ERROR: Python not found in PATH"
+          exit 1
+        fi
+        
+        # Check pip installation
+        if command -v pip &> /dev/null; then
+          PIP_VERSION=$(pip --version | cut -d' ' -f2)
+          echo "pip_version=${PIP_VERSION}" >> $GITHUB_OUTPUT
+          echo "SUCCESS: pip ${PIP_VERSION} is available"
+        else
+          echo "ERROR: pip not found in PATH"
+          exit 1
+        fi
+        
+        # Verify expected Python version
+        EXPECTED_VERSION="${{ inputs.python-version }}"
+        if [[ "$PYTHON_VERSION" == "$EXPECTED_VERSION"* ]]; then
+          echo "SUCCESS: Python version matches expected version ${EXPECTED_VERSION}"
+        else
+          echo "WARNING: Python version ${PYTHON_VERSION} does not match expected ${EXPECTED_VERSION}"
+        fi
+        
+        # Check Python modules
+        echo "INFO: Checking core Python modules..."
+        python -c "
+        import sys
+        import os
+        import json
+        import subprocess
+        print(f'SUCCESS: Core modules available')
+        print(f'Python executable: {sys.executable}')
+        print(f'Python path: {sys.path[0] if sys.path else \"unknown\"}')
+        print(f'Platform: {sys.platform}')
+        "
+
+    - name: Check disk space
+      id: check-disk
+      if: ${{ inputs.check-disk == 'true' }}
       shell: bash
+      run: |
+        echo "INFO: Checking disk space..."
+        
+        # Get disk usage information
+        DISK_INFO=$(df -h / | tail -1)
+        AVAILABLE_SPACE=$(echo "$DISK_INFO" | awk '{print $4}')
+        USED_PERCENT=$(echo "$DISK_INFO" | awk '{print $5}')
+        
+        echo "disk_info=${AVAILABLE_SPACE} available (${USED_PERCENT} used)" >> $GITHUB_OUTPUT
+        
+        echo "=== Disk Space Information ==="
+        df -h
+        echo "Available space on root: ${AVAILABLE_SPACE}"
+        echo "Used percentage: ${USED_PERCENT}"
+        
+        # Check if disk space is critically low
+        USED_NUM=$(echo "$USED_PERCENT" | tr -d '%')
+        if [ "$USED_NUM" -gt 90 ]; then
+          echo "WARNING: Disk usage is above 90% (${USED_PERCENT})"
+        elif [ "$USED_NUM" -gt 95 ]; then
+          echo "ERROR: Disk usage is critically high (${USED_PERCENT})"
+          exit 1
+        fi
+
+    - name: Install dependencies
+      if: ${{ inputs.install-dependencies == 'true' && inputs.python-version != 'false' }}
+      shell: bash
+      run: |
+        echo "INFO: Installing Python dependencies..."
+        
+        # Upgrade pip first
+        python -m pip install --upgrade pip
+        
+        # Install from requirements.txt if it exists
+        if [ -f "requirements.txt" ]; then
+          echo "INFO: Installing from requirements.txt..."
+          pip install -r requirements.txt
+        else
+          echo "INFO: No requirements.txt found, skipping package installation"
+        fi
+        
+        # Install common development tools
+        echo "INFO: Installing common development tools..."
+        pip install wheel setuptools
+
+    - name: Validate environment
+      shell: bash
+      run: |
+        echo "INFO: Validating environment setup..."
+        
+        # System information
+        echo "=== System Information ==="
+        echo "Operating System: $(uname -s)"
+        echo "Architecture: $(uname -m)"
+        echo "Kernel: $(uname -r)"
+        
+        if [ "${{ inputs.python-version }}" != "false" ]; then
+          echo "=== Python Environment ==="
+          echo "Python version: ${{ steps.verify-python.outputs.python_version || 'unknown' }}"
+          echo "Python path: ${{ steps.verify-python.outputs.python_path || 'unknown' }}"
+          echo "Pip version: ${{ steps.verify-python.outputs.pip_version || 'unknown' }}"
+          
+          # List installed packages
+          echo "=== Installed Packages ==="
+          pip list --format=columns | head -20 || echo "Could not list packages"
+        fi
+        
+        # Environment variables
+        echo "=== Environment Variables ==="
+        echo "HOME: ${HOME}"
+        echo "PATH: ${PATH}"
+        echo "GITHUB_WORKSPACE: ${GITHUB_WORKSPACE:-not set}"
+        
+        if [ "${{ inputs.check-disk }}" = "true" ]; then
+          echo "=== Disk Space ==="
+          echo "Available: ${{ steps.check-disk.outputs.disk_info || 'unknown' }}"
+        fi
+
+    - name: Calculate setup time
+      shell: bash
+      run: |
+        start_time="${{ steps.track-time.outputs.start_time }}"
+        end_time=$(date +%s)
+        setup_time=$((end_time - start_time))
+        echo "setup_time=${setup_time}" >> $GITHUB_OUTPUT
+        echo "INFO: Environment setup completed in ${setup_time} seconds"
+
+    - name: Summary
+      shell: bash
+      run: |
+        echo "SUMMARY: Environment Setup Summary:"
+        if [ "${{ inputs.python-version }}" != "false" ]; then
+          echo "   Python: ${{ steps.verify-python.outputs.python_version || 'not installed' }}"
+          echo "   Pip: ${{ steps.verify-python.outputs.pip_version || 'not installed' }}"
+          echo "   Cache Hit: ${{ steps.python-setup.outputs.cache-hit || 'unknown' }}"
+        fi
+        if [ "${{ inputs.check-disk }}" = "true" ]; then
+          echo "   Disk Space: ${{ steps.check-disk.outputs.disk_info || 'unknown' }}"
+        fi
+        echo "   Setup Time: ${{ steps.track-time.outputs.setup_time }} seconds"

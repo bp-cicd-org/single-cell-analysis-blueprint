@@ -1,97 +1,366 @@
 name: 'Check Environment Information'
-description: 'Show / Check system information'
+description: 'Comprehensive system information check with structured output and error handling'
+
+inputs:
+  check-gpu:
+    description: 'Whether to check GPU information'
+    required: false
+    default: 'true'
+  check-docker:
+    description: 'Whether to check Docker information'
+    required: false
+    default: 'true'
+  fail-on-gpu-missing:
+    description: 'Whether to fail if GPU is not detected'
+    required: false
+    default: 'false'
+  enable-debug:
+    description: 'Enable debug output'
+    required: false
+    default: 'false'
+
+outputs:
+  os-info:
+    description: 'Operating system information (JSON format)'
+    value: ${{ steps.system-info.outputs.os_info }}
+  cpu-info:
+    description: 'CPU information (JSON format)'
+    value: ${{ steps.system-info.outputs.cpu_info }}
+  memory-info:
+    description: 'Memory information (JSON format)'
+    value: ${{ steps.system-info.outputs.memory_info }}
+  gpu-available:
+    description: 'Whether GPU is available'
+    value: ${{ steps.gpu-info.outputs.gpu_available }}
+  gpu-info:
+    description: 'GPU information (JSON format)'
+    value: ${{ steps.gpu-info.outputs.gpu_info }}
+  cuda-available:
+    description: 'Whether CUDA is available'
+    value: ${{ steps.cuda-info.outputs.cuda_available }}
+  cuda-version:
+    description: 'CUDA version if available'
+    value: ${{ steps.cuda-info.outputs.cuda_version }}
+  docker-available:
+    description: 'Whether Docker is available'
+    value: ${{ steps.docker-info.outputs.docker_available }}
+  docker-info:
+    description: 'Docker information (JSON format)'
+    value: ${{ steps.docker-info.outputs.docker_info }}
 
 runs:
   using: "composite"
   steps:
-    - name: Install software
-      run: |
-        sudo apt update && sudo apt install -y pciutils
+    - name: Install required tools
       shell: bash
-
-    - name: Check System Info
       run: |
-        echo "=== OS Info ==="
-        uname -a  # Linux/macOS
-        cat /etc/os-release
+        echo "INFO: Installing system information tools..."
+        
+        # Update package lists
+        if command -v apt-get &> /dev/null; then
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pciutils lshw curl jq || echo "WARNING: Some tools failed to install"
+        elif command -v brew &> /dev/null; then
+          brew install pciutils jq || echo "WARNING: Some tools failed to install"
+        else
+          echo "WARNING: Package manager not recognized, some tools may not be available"
+        fi
 
-        echo "=== CPU Info ==="
-        lscpu || sysctl -n machdep.cpu.brand_string  # Linux | macOS
-
-        echo "=== Memory Info ==="
-        free -h || vm_stat  # Linux | macOS
-
+    - name: Collect system information
+      id: system-info
+      shell: bash
+      run: |
+        echo "INFO: Collecting system information..."
+        
+        # OS Information
+        echo "=== Operating System Information ==="
+        OS_NAME=$(uname -s)
+        OS_RELEASE=""
+        OS_VERSION=""
+        
+        if [ -f /etc/os-release ]; then
+          source /etc/os-release
+          OS_RELEASE="$NAME"
+          OS_VERSION="$VERSION"
+          echo "OS: $NAME $VERSION"
+          cat /etc/os-release
+        else
+          OS_RELEASE="$(uname -s)"
+          OS_VERSION="$(uname -r)"
+          echo "OS: $OS_RELEASE $OS_VERSION"
+          uname -a
+        fi
+        
+        # Create OS info JSON
+        OS_INFO_JSON=$(jq -n \
+          --arg name "$OS_NAME" \
+          --arg release "$OS_RELEASE" \
+          --arg version "$OS_VERSION" \
+          --arg arch "$(uname -m)" \
+          --arg kernel "$(uname -r)" \
+          '{name: $name, release: $release, version: $version, architecture: $arch, kernel: $kernel}')
+        echo "os_info=${OS_INFO_JSON}" >> $GITHUB_OUTPUT
+        
+        # CPU Information
+        echo "=== CPU Information ==="
+        CPU_COUNT=""
+        CPU_MODEL=""
+        
+        if command -v lscpu &> /dev/null; then
+          lscpu
+          CPU_COUNT=$(lscpu | grep "^CPU(s):" | awk '{print $2}')
+          CPU_MODEL=$(lscpu | grep "Model name:" | cut -d':' -f2 | xargs)
+        elif command -v sysctl &> /dev/null; then
+          CPU_COUNT=$(sysctl -n hw.ncpu 2>/dev/null || echo "unknown")
+          CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "unknown")
+          echo "CPU Count: $CPU_COUNT"
+          echo "CPU Model: $CPU_MODEL"
+        else
+          CPU_COUNT="unknown"
+          CPU_MODEL="unknown"
+          echo "CPU information tools not available"
+        fi
+        
+        # Create CPU info JSON
+        CPU_INFO_JSON=$(jq -n \
+          --arg count "$CPU_COUNT" \
+          --arg model "$CPU_MODEL" \
+          '{count: $count, model: $model}')
+        echo "cpu_info=${CPU_INFO_JSON}" >> $GITHUB_OUTPUT
+        
+        # Memory Information
+        echo "=== Memory Information ==="
+        TOTAL_MEM=""
+        AVAILABLE_MEM=""
+        
+        if command -v free &> /dev/null; then
+          free -h
+          TOTAL_MEM=$(free -b | awk 'NR==2{print $2}')
+          AVAILABLE_MEM=$(free -b | awk 'NR==2{print $7}')
+        elif command -v vm_stat &> /dev/null; then
+          vm_stat
+          TOTAL_MEM=$(sysctl -n hw.memsize 2>/dev/null || echo "unknown")
+          AVAILABLE_MEM="unknown"
+        else
+          TOTAL_MEM="unknown"
+          AVAILABLE_MEM="unknown"
+          echo "Memory information tools not available"
+        fi
+        
+        # Create memory info JSON
+        MEMORY_INFO_JSON=$(jq -n \
+          --arg total "$TOTAL_MEM" \
+          --arg available "$AVAILABLE_MEM" \
+          '{total: $total, available: $available}')
+        echo "memory_info=${MEMORY_INFO_JSON}" >> $GITHUB_OUTPUT
+        
         echo "=== Disk Space ==="
-        df -h  # Linux/macOS
+        df -h
+
+    - name: Check GPU information
+      id: gpu-info
+      if: inputs.check-gpu == 'true'
       shell: bash
-
-    - name: Check GPU Info
       run: |
-        echo "===== 1. Check PCI Devices (GPU) ====="
-        sudo lspci | grep -i vga
-
-        echo "===== 2. Check NVIDIA GPU (if exists) ====="
+        echo "INFO: Checking GPU information..."
+        
+        GPU_AVAILABLE="false"
+        GPU_COUNT="0"
+        GPU_MODELS=""
+        NVIDIA_DRIVER=""
+        
+        # Check PCI devices for GPU
+        echo "=== PCI GPU Devices ==="
+        if command -v lspci &> /dev/null; then
+          GPU_DEVICES=$(lspci | grep -i vga || echo "No VGA devices found")
+          echo "$GPU_DEVICES"
+          
+          if echo "$GPU_DEVICES" | grep -q .; then
+            GPU_AVAILABLE="true"
+            GPU_COUNT=$(echo "$GPU_DEVICES" | wc -l)
+            GPU_MODELS=$(echo "$GPU_DEVICES" | cut -d':' -f3 | tr '\n' ';')
+          fi
+        else
+          echo "WARNING: lspci not available, cannot check PCI devices"
+        fi
+        
+        # Check NVIDIA GPU specifically
+        echo "=== NVIDIA GPU Information ==="
         if command -v nvidia-smi &> /dev/null; then
-          nvidia-smi
+          if nvidia-smi &> /dev/null; then
+            echo "SUCCESS: NVIDIA GPU detected"
+            nvidia-smi
+            GPU_AVAILABLE="true"
+            NVIDIA_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits | head -1)
+          else
+            echo "WARNING: nvidia-smi failed to run"
+            if [ "${{ inputs.fail-on-gpu-missing }}" = "true" ]; then
+              echo "ERROR: GPU required but nvidia-smi failed"
+              exit 1
+            fi
+          fi
         else
-          echo "NVIDIA GPU not detected or drivers not installed."
+          echo "INFO: nvidia-smi not found - NVIDIA GPU not detected or drivers not installed"
+          if [ "${{ inputs.fail-on-gpu-missing }}" = "true" ]; then
+            echo "ERROR: GPU required but not detected"
+            exit 1
+          fi
         fi
-
-        echo "===== 3. Check OpenCL/ROCm (AMD/Intel) ====="
+        
+        # Check other GPU types
+        echo "=== Other GPU Information ==="
         if command -v clinfo &> /dev/null; then
-          clinfo | grep -i "device name"
+          echo "OpenCL devices:"
+          clinfo | grep -i "device name" || echo "No OpenCL devices found"
         else
-          echo "OpenCL/ROCm not available."
+          echo "INFO: clinfo not available"
         fi
-      shell: bash
+        
+        # Set outputs
+        echo "gpu_available=${GPU_AVAILABLE}" >> $GITHUB_OUTPUT
+        
+        # Create GPU info JSON
+        GPU_INFO_JSON=$(jq -n \
+          --arg available "$GPU_AVAILABLE" \
+          --arg count "$GPU_COUNT" \
+          --arg models "$GPU_MODELS" \
+          --arg nvidia_driver "$NVIDIA_DRIVER" \
+          '{available: ($available == "true"), count: $count, models: $models, nvidia_driver: $nvidia_driver}')
+        echo "gpu_info=${GPU_INFO_JSON}" >> $GITHUB_OUTPUT
 
-    - name: Check CUDA/cuDNN
+    - name: Check CUDA information
+      id: cuda-info
+      if: inputs.check-gpu == 'true'
+      shell: bash
       run: |
-        echo "===== CUDA Version ====="
+        echo "INFO: Checking CUDA information..."
+        
+        CUDA_AVAILABLE="false"
+        CUDA_VERSION=""
+        CUDNN_VERSION=""
+        
+        # Check CUDA installation
+        echo "=== CUDA Version ==="
         if command -v nvcc &> /dev/null; then
           nvcc --version
+          CUDA_AVAILABLE="true"
+          CUDA_VERSION=$(nvcc --version | grep -oP 'release \K[0-9.]+')
         else
-          echo "CUDA not installed."
+          echo "INFO: CUDA compiler (nvcc) not found"
         fi
+        
+        # Check cuDNN
+        echo "=== cuDNN Version ==="
+        CUDNN_HEADER_PATHS=(
+          "/usr/local/cuda/include/cudnn_version.h"
+          "/usr/include/cudnn_version.h"
+          "/opt/cuda/include/cudnn_version.h"
+        )
+        
+        for header_path in "${CUDNN_HEADER_PATHS[@]}"; do
+          if [ -f "$header_path" ]; then
+            echo "Found cuDNN header at: $header_path"
+            MAJOR=$(grep -E "define CUDNN_MAJOR" "$header_path" | awk '{print $3}')
+            MINOR=$(grep -E "define CUDNN_MINOR" "$header_path" | awk '{print $3}')
+            PATCH=$(grep -E "define CUDNN_PATCHLEVEL" "$header_path" | awk '{print $3}')
+            if [ -n "$MAJOR" ] && [ -n "$MINOR" ] && [ -n "$PATCH" ]; then
+              CUDNN_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+              echo "cuDNN version: $CUDNN_VERSION"
+            fi
+            break
+          fi
+        done
+        
+        if [ -z "$CUDNN_VERSION" ]; then
+          echo "INFO: cuDNN not found"
+        fi
+        
+        # Set outputs
+        echo "cuda_available=${CUDA_AVAILABLE}" >> $GITHUB_OUTPUT
+        echo "cuda_version=${CUDA_VERSION}" >> $GITHUB_OUTPUT
 
-        echo "===== cuDNN Version ====="
-        if [ -f /usr/local/cuda/include/cudnn_version.h ]; then
-          grep -E "define CUDNN_MAJOR|define CUDNN_MINOR|define CUDNN_PATCHLEVEL" /usr/local/cuda/include/cudnn_version.h
-        else
-          echo "cuDNN not found."
-        fi
+    - name: Check Docker information
+      id: docker-info
+      if: inputs.check-docker == 'true'
       shell: bash
-
-    - name: Check Vulkan
       run: |
-        echo "===== Vulkan Info ====="
-        if command -v vulkaninfo &> /dev/null; then
-          vulkaninfo --summary | grep "GPU id"
+        echo "INFO: Checking Docker information..."
+        
+        DOCKER_AVAILABLE="false"
+        DOCKER_VERSION=""
+        COMPOSE_VERSION=""
+        
+        # Check Docker installation
+        echo "=== Docker Information ==="
+        if command -v docker &> /dev/null; then
+          if docker version &> /dev/null; then
+            DOCKER_AVAILABLE="true"
+            DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "unknown")
+            echo "SUCCESS: Docker is available"
+            docker version
+          else
+            echo "WARNING: Docker command found but not working properly"
+          fi
         else
-          echo "Vulkan not installed."
+          echo "INFO: Docker not found"
         fi
-      shell: bash
+        
+        # Check Docker Compose
+        if [ "$DOCKER_AVAILABLE" = "true" ]; then
+          echo "=== Docker Compose Information ==="
+          if docker compose version &> /dev/null; then
+            COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || echo "unknown")
+            echo "Docker Compose version: $COMPOSE_VERSION"
+          elif command -v docker-compose &> /dev/null; then
+            COMPOSE_VERSION=$(docker-compose version --short 2>/dev/null || echo "unknown")
+            echo "Docker Compose (standalone) version: $COMPOSE_VERSION"
+          else
+            echo "INFO: Docker Compose not found"
+          fi
+          
+          # Check running containers
+          echo "=== Running Containers ==="
+          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | head -10 || echo "No containers or Docker not accessible"
+        fi
+        
+        # Set outputs
+        echo "docker_available=${DOCKER_AVAILABLE}" >> $GITHUB_OUTPUT
+        
+        # Create Docker info JSON
+        DOCKER_INFO_JSON=$(jq -n \
+          --arg available "$DOCKER_AVAILABLE" \
+          --arg docker_version "$DOCKER_VERSION" \
+          --arg compose_version "$COMPOSE_VERSION" \
+          '{available: ($available == "true"), docker_version: $docker_version, compose_version: $compose_version}')
+        echo "docker_info=${DOCKER_INFO_JSON}" >> $GITHUB_OUTPUT
 
-    - name: Check OpenCL/ROCm
+    - name: Summary report
+      shell: bash
       run: |
-        echo "===== OpenCL Devices ====="
-        if command -v clinfo &> /dev/null; then
-          clinfo | grep -A 5 "Device Name"
-        else
-          echo "OpenCL not installed."
+        echo "SUMMARY: System Information Summary:"
+        echo "   OS: $(echo '${{ steps.system-info.outputs.os_info }}' | jq -r '.release // "unknown"')"
+        echo "   CPU: $(echo '${{ steps.system-info.outputs.cpu_info }}' | jq -r '.model // "unknown"') ($(echo '${{ steps.system-info.outputs.cpu_info }}' | jq -r '.count // "unknown"') cores)"
+        
+        if [ "${{ inputs.check-gpu }}" = "true" ]; then
+          echo "   GPU: ${{ steps.gpu-info.outputs.gpu_available }}"
+          if [ "${{ steps.gpu-info.outputs.gpu_available }}" = "true" ]; then
+            echo "   CUDA: ${{ steps.cuda-info.outputs.cuda_available }}"
+          fi
         fi
-
-        echo "===== ROCm (AMD GPU) ====="
-        if [ -f /opt/rocm/bin/rocminfo ]; then
-          /opt/rocm/bin/rocminfo | grep "gfx"
-        else
-          echo "ROCm not installed."
+        
+        if [ "${{ inputs.check-docker }}" = "true" ]; then
+          echo "   Docker: ${{ steps.docker-info.outputs.docker_available }}"
         fi
-      shell: bash
-
-    - name: Check memory
-      run: |
-        free -h
-        df -h
-        docker stats --no-stream
-      shell: bash
+        
+        if [ "${{ inputs.enable-debug }}" = "true" ]; then
+          echo "DEBUG: All output variables:"
+          echo "DEBUG: OS Info: ${{ steps.system-info.outputs.os_info }}"
+          echo "DEBUG: CPU Info: ${{ steps.system-info.outputs.cpu_info }}"
+          echo "DEBUG: Memory Info: ${{ steps.system-info.outputs.memory_info }}"
+          if [ "${{ inputs.check-gpu }}" = "true" ]; then
+            echo "DEBUG: GPU Info: ${{ steps.gpu-info.outputs.gpu_info }}"
+          fi
+          if [ "${{ inputs.check-docker }}" = "true" ]; then
+            echo "DEBUG: Docker Info: ${{ steps.docker-info.outputs.docker_info }}"
+          fi
+        fi

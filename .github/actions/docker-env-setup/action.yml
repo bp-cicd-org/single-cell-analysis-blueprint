@@ -1,0 +1,287 @@
+name: 'Docker Environment Setup'
+description: 'Sets up Docker environment with NGC API configuration and system information collection'
+
+inputs:
+  ngc-api-key:
+    description: 'NGC API Key for Docker registry authentication'
+    required: false
+  install-docker:
+    description: 'Whether to install Docker and Docker Compose'
+    required: false
+    default: 'true'
+  install-compose:
+    description: 'Whether to install Docker Compose plugin'
+    required: false
+    default: 'true'
+  install-dependencies:
+    description: 'Whether to install system dependencies (wget, build-essential)'
+    required: false
+    default: 'true'
+  show-system-info:
+    description: 'Whether to display detailed system information'
+    required: false
+    default: 'true'
+  update-packages:
+    description: 'Whether to update package lists'
+    required: false
+    default: 'true'
+  enable-debug:
+    description: 'Enable debug output'
+    required: false
+    default: 'false'
+
+outputs:
+  docker-version:
+    description: 'Installed Docker version'
+    value: ${{ steps.get-versions.outputs.docker_version }}
+  compose-version:
+    description: 'Installed Docker Compose version'
+    value: ${{ steps.get-versions.outputs.compose_version }}
+  gpu-available:
+    description: 'Whether GPU is available (nvidia-smi accessible)'
+    value: ${{ steps.check-gpu.outputs.gpu_available }}
+  setup-time:
+    description: 'Time taken for setup in seconds'
+    value: ${{ steps.track-time.outputs.setup_time }}
+  os-info:
+    description: 'Operating system information'
+    value: ${{ steps.system-info.outputs.os_info }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Track setup time
+      id: track-time
+      shell: bash
+      run: |
+        start_time=$(date +%s)
+        echo "start_time=${start_time}" >> $GITHUB_OUTPUT
+
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ "${{ inputs.enable-debug }}" = "true" ]; then
+          echo "DEBUG: Docker Environment Setup started"
+          echo "DEBUG: Install Docker: ${{ inputs.install-docker }}"
+          echo "DEBUG: Install Compose: ${{ inputs.install-compose }}"
+          echo "DEBUG: Install Dependencies: ${{ inputs.install-dependencies }}"
+          echo "DEBUG: Show System Info: ${{ inputs.show-system-info }}"
+          echo "DEBUG: NGC API Key provided: ${{ inputs.ngc-api-key != '' }}"
+        fi
+
+    - name: Update package lists
+      if: inputs.update-packages == 'true'
+      shell: bash
+      run: |
+        echo "INFO: Updating package lists..."
+        sudo apt-get update
+        echo "SUCCESS: Package lists updated"
+
+    - name: Install system dependencies
+      if: inputs.install-dependencies == 'true'
+      shell: bash
+      run: |
+        echo "INFO: Installing system dependencies..."
+        sudo apt-get install -y wget curl build-essential
+        echo "SUCCESS: System dependencies installed"
+
+    - name: Install Docker
+      if: inputs.install-docker == 'true'
+      shell: bash
+      run: |
+        echo "INFO: Installing Docker..."
+        
+        # Check if Docker is already installed
+        if command -v docker &> /dev/null; then
+          echo "INFO: Docker is already installed, checking version..."
+          docker version || echo "WARNING: Docker version check failed"
+        else
+          echo "INFO: Docker not found, installing..."
+          curl -fsSL https://get.docker.com -o get-docker.sh
+          sudo sh get-docker.sh
+          rm -f get-docker.sh
+          echo "SUCCESS: Docker installation completed"
+        fi
+        
+        # Ensure Docker daemon is running
+        if ! sudo systemctl is-active --quiet docker; then
+          echo "INFO: Starting Docker daemon..."
+          sudo systemctl start docker
+          sudo systemctl enable docker
+        fi
+
+    - name: Install Docker Compose
+      if: inputs.install-compose == 'true'
+      shell: bash
+      run: |
+        echo "INFO: Installing Docker Compose..."
+        
+        # Update package lists for compose plugin
+        sudo apt-get update
+        
+        # Install Docker Compose plugin and standalone
+        sudo apt-get install -y docker-compose-plugin docker-compose
+        
+        echo "SUCCESS: Docker Compose installation completed"
+
+    - name: Configure NGC API
+      if: inputs.ngc-api-key != ''
+      shell: bash
+      env:
+        NGC_API_KEY: ${{ inputs.ngc-api-key }}
+      run: |
+        echo "INFO: Configuring NGC API authentication..."
+        
+        # Create Docker config directory if it doesn't exist
+        mkdir -p ~/.docker
+        
+        # Login to NGC registry (this will create/update config.json)
+        echo "$NGC_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-stdin
+        
+        echo "SUCCESS: NGC API authentication configured"
+
+    - name: Get system information
+      id: system-info
+      if: inputs.show-system-info == 'true'
+      shell: bash
+      run: |
+        echo "INFO: Collecting system information..."
+        echo "==================== System Information ===================="
+        
+        # OS Information
+        echo "=== Operating System ==="
+        if [ -f /etc/os-release ]; then
+          cat /etc/os-release
+          OS_INFO=$(grep '^PRETTY_NAME=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+          echo "os_info=${OS_INFO}" >> $GITHUB_OUTPUT
+        else
+          uname -a
+          echo "os_info=$(uname -s)" >> $GITHUB_OUTPUT
+        fi
+        
+        # System Resources
+        echo "=== System Resources ==="
+        echo "CPU Information:"
+        lscpu | grep -E "Model name|CPU\(s\)|Thread\(s\)|Core\(s\)" || echo "CPU info not available"
+        
+        echo "Memory Information:"
+        free -h || echo "Memory info not available"
+        
+        echo "Disk Information:"
+        df -h / || echo "Disk info not available"
+        
+        echo "============================================================"
+
+    - name: Check GPU availability
+      id: check-gpu
+      shell: bash
+      run: |
+        echo "INFO: Checking GPU availability..."
+        
+        if command -v nvidia-smi &> /dev/null; then
+          if nvidia-smi > /dev/null 2>&1; then
+            echo "SUCCESS: NVIDIA GPU detected"
+            echo "gpu_available=true" >> $GITHUB_OUTPUT
+            
+            if [ "${{ inputs.show-system-info }}" = "true" ]; then
+              echo "=== GPU Information ==="
+              nvidia-smi
+            fi
+          else
+            echo "WARNING: nvidia-smi command failed"
+            echo "gpu_available=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "INFO: nvidia-smi not found, no NVIDIA GPU detected"
+          echo "gpu_available=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Get Docker versions
+      id: get-versions
+      shell: bash
+      run: |
+        echo "INFO: Getting Docker and Compose versions..."
+        
+        # Get Docker version
+        if command -v docker &> /dev/null; then
+          DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "unknown")
+          echo "docker_version=${DOCKER_VERSION}" >> $GITHUB_OUTPUT
+          echo "Docker version: ${DOCKER_VERSION}"
+        else
+          echo "docker_version=not_installed" >> $GITHUB_OUTPUT
+          echo "WARNING: Docker not found"
+        fi
+        
+        # Get Docker Compose version
+        if command -v docker &> /dev/null && docker compose version &> /dev/null; then
+          COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || echo "unknown")
+          echo "compose_version=${COMPOSE_VERSION}" >> $GITHUB_OUTPUT
+          echo "Docker Compose version: ${COMPOSE_VERSION}"
+        elif command -v docker-compose &> /dev/null; then
+          COMPOSE_VERSION=$(docker-compose version --short 2>/dev/null || echo "unknown")
+          echo "compose_version=${COMPOSE_VERSION}" >> $GITHUB_OUTPUT
+          echo "Docker Compose (standalone) version: ${COMPOSE_VERSION}"
+        else
+          echo "compose_version=not_installed" >> $GITHUB_OUTPUT
+          echo "WARNING: Docker Compose not found"
+        fi
+
+    - name: Verify Docker installation
+      shell: bash
+      run: |
+        echo "INFO: Verifying Docker installation..."
+        
+        # Test Docker daemon
+        if docker info > /dev/null 2>&1; then
+          echo "SUCCESS: Docker daemon is running"
+        else
+          echo "ERROR: Docker daemon is not accessible"
+          exit 1
+        fi
+        
+        # Test Docker Compose
+        if docker compose version > /dev/null 2>&1; then
+          echo "SUCCESS: Docker Compose is working"
+        elif docker-compose version > /dev/null 2>&1; then
+          echo "SUCCESS: Docker Compose (standalone) is working"
+        else
+          echo "WARNING: Docker Compose is not working properly"
+        fi
+        
+        # Test basic Docker functionality
+        echo "INFO: Testing basic Docker functionality..."
+        if docker run --rm hello-world > /dev/null 2>&1; then
+          echo "SUCCESS: Docker basic functionality test passed"
+        else
+          echo "WARNING: Docker basic functionality test failed"
+        fi
+
+    - name: Display version summary
+      if: inputs.show-system-info == 'true'
+      shell: bash
+      run: |
+        echo "==================== Version Summary ===================="
+        echo "Docker: ${{ steps.get-versions.outputs.docker_version }}"
+        echo "Docker Compose: ${{ steps.get-versions.outputs.compose_version }}"
+        echo "GPU Available: ${{ steps.check-gpu.outputs.gpu_available }}"
+        echo "OS: ${{ steps.system-info.outputs.os_info }}"
+        echo "=========================================================="
+
+    - name: Calculate setup time
+      shell: bash
+      run: |
+        start_time="${{ steps.track-time.outputs.start_time }}"
+        end_time=$(date +%s)
+        setup_time=$((end_time - start_time))
+        echo "setup_time=${setup_time}" >> $GITHUB_OUTPUT
+        echo "INFO: Docker environment setup completed in ${setup_time} seconds"
+
+    - name: Summary
+      shell: bash
+      run: |
+        echo "SUMMARY: Docker Environment Setup Summary:"
+        echo "   Setup Time: ${{ steps.track-time.outputs.setup_time }} seconds"
+        echo "   Docker Version: ${{ steps.get-versions.outputs.docker_version }}"
+        echo "   Compose Version: ${{ steps.get-versions.outputs.compose_version }}"
+        echo "   GPU Available: ${{ steps.check-gpu.outputs.gpu_available }}"
+        echo "   NGC API Configured: ${{ inputs.ngc-api-key != '' }}"
