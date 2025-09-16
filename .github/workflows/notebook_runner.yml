@@ -529,14 +529,23 @@ jobs:
             if [ -f "$json_file" ]; then
               results=$(cat "$json_file")
 
-              total_passed=$((total_passed + $(echo "$results" | jq -r '.passed')))
-              total_failed=$((total_failed + $(echo "$results" | jq -r '.failed')))
-              total_skipped=$((total_skipped + $(echo "$results" | jq -r '.skipped')))
-              total_errors=$((total_errors + $(echo "$results" | jq -r '.errors')))
-              total_xfailed=$((total_xfailed + $(echo "$results" | jq -r '.xfailed')))
-              total_xpassed=$((total_xpassed + $(echo "$results" | jq -r '.xpassed')))
+              # Extract test results to avoid complex nesting
+              passed=$(echo "$results" | jq -r '.passed')
+              failed=$(echo "$results" | jq -r '.failed')
+              skipped=$(echo "$results" | jq -r '.skipped')
+              errors=$(echo "$results" | jq -r '.errors')
+              xfailed=$(echo "$results" | jq -r '.xfailed')
+              xpassed=$(echo "$results" | jq -r '.xpassed')
+              
+              # Update totals
+              total_passed=$((total_passed + passed))
+              total_failed=$((total_failed + failed))
+              total_skipped=$((total_skipped + skipped))
+              total_errors=$((total_errors + errors))
+              total_xfailed=$((total_xfailed + xfailed))
+              total_xpassed=$((total_xpassed + xpassed))
 
-              echo "| $nb_name | $(echo "$results" | jq -r '.passed') | $(echo "$results" | jq -r '.failed') | $(echo "$results" | jq -r '.skipped') | $(echo "$results" | jq -r '.errors') |" >> $GITHUB_STEP_SUMMARY
+              echo "| $nb_name | $passed | $failed | $skipped | $errors |" >> $GITHUB_STEP_SUMMARY
             else
               echo "| $nb_name | ❌ Missing data | ❌ Missing data | ❌ Missing data | ❌ Missing data |" >> $GITHUB_STEP_SUMMARY
             fi

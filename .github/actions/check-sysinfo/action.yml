@@ -353,8 +353,11 @@ runs:
       shell: bash
       run: |
         echo "SUMMARY: System Information Summary:"
-        echo "   OS: $(echo '${{ steps.system-info.outputs.os_info }}' | jq -r '.release // "unknown"')"
-        echo "   CPU: $(echo '${{ steps.system-info.outputs.cpu_info }}' | jq -r '.model // "unknown"') ($(echo '${{ steps.system-info.outputs.cpu_info }}' | jq -r '.count // "unknown"') cores)"
+        OS_RELEASE=$(echo '${{ steps.system-info.outputs.os_info }}' | jq -r '.release // "unknown"')
+        echo "   OS: ${OS_RELEASE}"
+        CPU_MODEL=$(echo '${{ steps.system-info.outputs.cpu_info }}' | jq -r '.model // "unknown"')
+        CPU_COUNT=$(echo '${{ steps.system-info.outputs.cpu_info }}' | jq -r '.count // "unknown"')
+        echo "   CPU: ${CPU_MODEL} (${CPU_COUNT} cores)"
         
         if [ "${{ inputs.check-gpu }}" = "true" ]; then
           echo "   GPU: ${{ steps.gpu-info.outputs.gpu_available }}"

@@ -136,7 +136,9 @@ runs:
         
         # Parse and set additional environment variables
         if [ "${{ inputs.environment-vars }}" != "{}" ]; then
+          echo 'Parsing environment variables...'
           echo '${{ inputs.environment-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' > "$ENV_FILE"
+          echo "Environment variables written to: $ENV_FILE"
         fi
 
     - name: Copy files to container
