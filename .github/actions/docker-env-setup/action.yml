@@ -103,11 +103,35 @@ runs:
           echo "SUCCESS: Docker installation completed"
         fi
         
-        # Ensure Docker daemon is running
-        if ! sudo systemctl is-active --quiet docker; then
-          echo "INFO: Starting Docker daemon..."
-          sudo systemctl start docker
-          sudo systemctl enable docker
+        # Check if Docker daemon is accessible
+        echo "INFO: Checking Docker daemon status..."
+        if ! docker version >/dev/null 2>&1; then
+          echo "WARNING: Docker daemon not accessible, attempting to start..."
+          
+          # Try different methods to start Docker daemon
+          if command -v systemctl >/dev/null 2>&1 && systemctl --version >/dev/null 2>&1; then
+            echo "INFO: Using systemctl to start Docker..."
+            sudo systemctl start docker
+            sudo systemctl enable docker
+          elif command -v service >/dev/null 2>&1; then
+            echo "INFO: Using service command to start Docker..."
+            sudo service docker start
+          else
+            echo "INFO: Starting Docker daemon manually..."
+            sudo dockerd --detach --pidfile="" || echo "Docker daemon may already be running"
+          fi
+          
+          # Wait a moment for daemon to start
+          sleep 3
+          
+          # Verify Docker is working
+          if docker version >/dev/null 2>&1; then
+            echo "SUCCESS: Docker daemon is now accessible"
+          else
+            echo "WARNING: Docker daemon may not be fully accessible yet"
+          fi
+        else
+          echo "SUCCESS: Docker daemon is already accessible"
         fi
 
     - name: Install Docker Compose
@@ -116,11 +140,65 @@ runs:
       run: |
         echo "INFO: Installing Docker Compose..."
         
-        # Update package lists for compose plugin
-        sudo apt-get update
+        # Check if docker compose plugin is already available
+        if docker compose version >/dev/null 2>&1; then
+          echo "INFO: docker compose plugin is already available"
+          docker compose version
+        else
+          echo "INFO: Installing docker compose plugin..."
+          
+          # Update package lists
+          sudo apt-get update
+          
+          # Install Docker Compose plugin (preferred method for modern Docker)
+          if sudo apt-get install -y docker-compose-plugin; then
+            echo "SUCCESS: docker-compose-plugin installed via apt"
+          else
+            echo "WARNING: Plugin installation via apt failed"
+          fi
+        fi
         
-        # Install Docker Compose plugin and standalone
-        sudo apt-get install -y docker-compose-plugin docker-compose
+        # Also install standalone docker-compose as fallback
+        if ! command -v docker-compose >/dev/null 2>&1; then
+          echo "INFO: Installing standalone docker-compose as fallback..."
+          
+          if sudo apt-get install -y docker-compose; then
+            echo "SUCCESS: standalone docker-compose installed via apt"
+          else
+            echo "INFO: Package installation failed, installing manually..."
+            
+            # Install docker-compose manually from GitHub releases
+            DOCKER_COMPOSE_VERSION="v2.31.0"
+            sudo curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            
+            # Create symlink if needed
+            if [ ! -f /usr/bin/docker-compose ]; then
+              sudo ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
+            fi
+          fi
+        fi
+        
+        # Verify installation - prefer plugin over standalone
+        echo "INFO: Verifying Docker Compose installation..."
+        
+        COMPOSE_AVAILABLE=false
+        if docker compose version >/dev/null 2>&1; then
+          echo "SUCCESS: 'docker compose' (plugin) is available"
+          docker compose version
+          COMPOSE_AVAILABLE=true
+        fi
+        
+        if command -v docker-compose >/dev/null 2>&1; then
+          echo "SUCCESS: 'docker-compose' (standalone) is available"
+          docker-compose --version
+          COMPOSE_AVAILABLE=true
+        fi
+        
+        if [ "$COMPOSE_AVAILABLE" = "false" ]; then
+          echo "ERROR: Neither 'docker compose' nor 'docker-compose' is available after installation"
+          exit 1
+        fi
         
         echo "SUCCESS: Docker Compose installation completed"
 

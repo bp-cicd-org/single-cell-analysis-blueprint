@@ -152,7 +152,7 @@ runs:
         echo "Source: ${{ inputs.source-path }}"
         echo "Destination: ${{ inputs.dest-path }}"
         
-        docker-compose -f "${{ inputs.compose-file }}" cp \
+        docker compose -f "${{ inputs.compose-file }}" cp \
           "${{ inputs.source-path }}" \
           "${{ inputs.service-name }}:${{ inputs.dest-path }}"
         
@@ -171,7 +171,7 @@ runs:
         echo "Source: ${{ inputs.source-path }}"
         echo "Destination: ${{ inputs.dest-path }}"
         
-        docker-compose -f "${{ inputs.compose-file }}" cp \
+        docker compose -f "${{ inputs.compose-file }}" cp \
           "${{ inputs.service-name }}:${{ inputs.source-path }}" \
           "${{ inputs.dest-path }}"
         
@@ -207,14 +207,14 @@ runs:
         if [ "${{ inputs.notebook-params }}" != "{}" ]; then
           PARAMS_FILE=$(mktemp)
           echo '${{ inputs.notebook-params }}' > "$PARAMS_FILE"
-          docker-compose -f "${{ inputs.compose-file }}" cp "$PARAMS_FILE" "${{ inputs.service-name }}:/tmp/notebook_params.json"
+          docker compose -f "${{ inputs.compose-file }}" cp "$PARAMS_FILE" "${{ inputs.service-name }}:/tmp/notebook_params.json"
           PAPERMILL_CMD="$PAPERMILL_CMD --parameters_file /tmp/notebook_params.json"
           rm -f "$PARAMS_FILE"
         fi
         
         # Execute notebook
         timeout $((${{ inputs.timeout-minutes }} * 60)) \
-        docker-compose -f "${{ inputs.compose-file }}" exec -T \
+        docker compose -f "${{ inputs.compose-file }}" exec -T \
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \
@@ -252,7 +252,7 @@ runs:
         echo "log_file=${LOG_FILE}" >> $GITHUB_OUTPUT
         
         # Execute conversion
-        docker-compose -f "${{ inputs.compose-file }}" exec -T \
+        docker compose -f "${{ inputs.compose-file }}" exec -T \
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \
@@ -296,7 +296,7 @@ runs:
         TEST_CMD="$TEST_CMD --junitxml=test-results.xml --html=test-report.html --self-contained-html"
         
         # Execute tests
-        docker-compose -f "${{ inputs.compose-file }}" exec -T \
+        docker compose -f "${{ inputs.compose-file }}" exec -T \
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \
@@ -334,7 +334,7 @@ runs:
           SCRIPT_EOF
           
           timeout $((${{ inputs.timeout-minutes }} * 60)) \
-          docker-compose -f "${{ inputs.compose-file }}" exec -T \
+          docker compose -f "${{ inputs.compose-file }}" exec -T \
             -u "${{ inputs.user }}" \
             -w "${{ inputs.working-dir }}" \
             "${{ inputs.service-name }}" \
@@ -346,7 +346,7 @@ runs:
           # Execute single command
           echo "INFO: Executing command: ${{ inputs.command }}"
           timeout $((${{ inputs.timeout-minutes }} * 60)) \
-          docker-compose -f "${{ inputs.compose-file }}" exec -T \
+          docker compose -f "${{ inputs.compose-file }}" exec -T \
             -u "${{ inputs.user }}" \
             -w "${{ inputs.working-dir }}" \
             "${{ inputs.service-name }}" \
@@ -392,7 +392,7 @@ runs:
         echo "log_file=${LOG_FILE}" >> $GITHUB_OUTPUT
         
         # List files created in working directory
-        FILES_CREATED=$(docker-compose -f "${{ inputs.compose-file }}" exec -T \
+        FILES_CREATED=$(docker compose -f "${{ inputs.compose-file }}" exec -T \
           "${{ inputs.service-name }}" \
           find "${{ inputs.working-dir }}" -maxdepth 1 -type f -newer "${{ inputs.working-dir }}" 2>/dev/null | tr '\n' ',' || echo "")
         echo "files_created=${FILES_CREATED}" >> $GITHUB_OUTPUT
@@ -406,7 +406,7 @@ runs:
         
         # Extract test results from XML if available
         RESULTS_FILE=$(mktemp)
-        docker-compose -f "${{ inputs.compose-file }}" exec -T \
+        docker compose -f "${{ inputs.compose-file }}" exec -T \
           "${{ inputs.service-name }}" \
           cat "${{ inputs.working-dir }}/test-results.xml" > "$RESULTS_FILE" 2>/dev/null || echo "No test results XML found"
         
