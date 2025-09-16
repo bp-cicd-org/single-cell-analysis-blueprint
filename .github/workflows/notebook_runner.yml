@@ -25,8 +25,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: notebook-${{ inputs.environment || 'dev' }}-${{ matrix.NOTEBOOK_FILENAME }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 
 jobs:
@@ -494,10 +494,14 @@ jobs:
       - name: Generate result metadata
         run: |
           ARTIFACT_DIR="${{ env.ARTIFACT_DIR }}"
-          echo '${{ steps.process-test-results.outputs.test_results_json || "{}" }}' > "$ARTIFACT_DIR/${{ matrix.NOTEBOOK_FILENAME }}.json"
+          TEST_RESULTS='${{ steps.process-test-results.outputs.test_results_json }}'
+          if [ -z "$TEST_RESULTS" ]; then
+            TEST_RESULTS='{}'
+          fi
+          echo "$TEST_RESULTS" > "$ARTIFACT_DIR/${{ matrix.NOTEBOOK_FILENAME }}.json"
 
           mkdir -p "${{ github.workspace }}/json-results"
-          echo '${{ steps.process-test-results.outputs.test_results_json || "{}" }}' > "json-results/${{ matrix.NOTEBOOK_FILENAME }}.json"
+          echo "$TEST_RESULTS" > "json-results/${{ matrix.NOTEBOOK_FILENAME }}.json"
 
           echo "INFO: Contents of artifact directory:"
           ls -al "$ARTIFACT_DIR"
