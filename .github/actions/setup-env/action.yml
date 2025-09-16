@@ -1,0 +1,34 @@
+name: 'Setup Environment'
+description: 'Configures Python, and checks disk space'
+inputs:
+  python-version:
+    description: 'Python version'
+    required: false
+    default: '3.12'
+  check-disk:
+    description: 'Whether to check disk space'
+    required: false
+    default: 'true'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Python ${{ inputs.python-version }}
+      if: ${{ inputs.python-version != 'false' }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: 'pip'
+        cache-dependency-path: |
+          requirements.txt
+          **/*.ipynb
+
+    - name: Check Disk
+      if: ${{ inputs.check-disk == 'true' }}
+      run: df -h
+      shell: bash
+
+    - name: Print Environment
+      run: |
+        echo "Python: $(python --version || echo 'Not installed')"
+      shell: bash
