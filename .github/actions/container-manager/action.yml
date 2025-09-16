@@ -125,7 +125,7 @@ runs:
         
         if [ "${{ inputs.action }}" = "restart" ]; then
           echo "INFO: Stopping existing containers first..."
-          docker compose -f "${{ inputs.compose-file }}" down
+          docker-compose -f "${{ inputs.compose-file }}" down
         fi
         
         echo "INFO: Starting container with compose file: ${{ inputs.compose-file }}"
@@ -140,7 +140,7 @@ runs:
         fi
         
         set -e
-        if ! docker compose --verbose -f "${{ inputs.compose-file }}" up -d --wait --force-recreate; then
+        if ! docker-compose --verbose -f "${{ inputs.compose-file }}" up -d --wait --force-recreate; then
           echo "ERROR: Failed to start containers"
           exit 1
         fi
@@ -155,7 +155,7 @@ runs:
       shell: bash
       run: |
         echo "INFO: Stopping containers..."
-        docker compose -f "${{ inputs.compose-file }}" down
+        docker-compose -f "${{ inputs.compose-file }}" down
         echo "SUCCESS: Containers stopped successfully"
 
     - name: Get container status
@@ -167,7 +167,7 @@ runs:
         docker ps -a
         
         # Get specific container info
-        CONTAINER_ID=$(docker compose -f "${{ inputs.compose-file }}" ps -q "${{ inputs.service-name }}" 2>/dev/null || echo "")
+        CONTAINER_ID=$(docker-compose -f "${{ inputs.compose-file }}" ps -q "${{ inputs.service-name }}" 2>/dev/null || echo "")
         if [ -n "$CONTAINER_ID" ]; then
           CONTAINER_STATUS=$(docker inspect "$CONTAINER_ID" --format='{{.State.Status}}' 2>/dev/null || echo "unknown")
           echo "container_id=${CONTAINER_ID}" >> $GITHUB_OUTPUT
@@ -187,7 +187,7 @@ runs:
         LOGS_FILE="docker-logs-${{ inputs.service-name }}.txt"
         echo "INFO: Retrieving container logs (last ${{ inputs.log-lines }} lines)..."
         
-        if docker compose -f "${{ inputs.compose-file }}" logs --no-color --tail=${{ inputs.log-lines }} "${{ inputs.service-name }}" > "$LOGS_FILE" 2>&1; then
+        if docker-compose -f "${{ inputs.compose-file }}" logs --no-color --tail=${{ inputs.log-lines }} "${{ inputs.service-name }}" > "$LOGS_FILE" 2>&1; then
           echo "SUCCESS: Logs saved to $LOGS_FILE"
           echo "logs_file=${LOGS_FILE}" >> $GITHUB_OUTPUT
           
@@ -206,14 +206,14 @@ runs:
         echo "INFO: Preparing container environment for service ${{ inputs.service-name }}..."
         
         # Install system packages as root
-        docker compose -f "${{ inputs.compose-file }}" exec -u root "${{ inputs.service-name }}" bash -c '
+        docker-compose -f "${{ inputs.compose-file }}" exec -u root "${{ inputs.service-name }}" bash -c '
           apt-get update
           apt-get install -y libxml2-utils
           apt-get clean
         '
         
         # Setup user environment
-        docker compose -f "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" bash <<'EOF'
+        docker-compose -f "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" bash <<'EOF'
         set -euxo pipefail
         
         whoami
@@ -250,7 +250,7 @@ runs:
         echo "User: ${{ inputs.user }}"
         echo "Working directory: ${{ inputs.working-dir }}"
         
-        docker compose -f "${{ inputs.compose-file }}" exec \
+        docker-compose -f "${{ inputs.compose-file }}" exec \
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \

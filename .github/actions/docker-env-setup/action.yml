@@ -213,8 +213,8 @@ runs:
         fi
         
         # Get Docker Compose version
-        if command -v docker &> /dev/null && docker compose version &> /dev/null; then
-          COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || echo "unknown")
+        if command -v docker &> /dev/null && docker-compose version &> /dev/null; then
+          COMPOSE_VERSION=$(docker-compose version --short 2>/dev/null || echo "unknown")
           echo "compose_version=${COMPOSE_VERSION}" >> $GITHUB_OUTPUT
           echo "Docker Compose version: ${COMPOSE_VERSION}"
         elif command -v docker-compose &> /dev/null; then
@@ -240,7 +240,7 @@ runs:
         fi
         
         # Test Docker Compose
-        if docker compose version > /dev/null 2>&1; then
+        if docker-compose version > /dev/null 2>&1; then
           echo "SUCCESS: Docker Compose is working"
         elif docker-compose version > /dev/null 2>&1; then
           echo "SUCCESS: Docker Compose (standalone) is working"

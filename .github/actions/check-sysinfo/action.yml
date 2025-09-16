@@ -308,8 +308,8 @@ runs:
         # Check Docker Compose
         if [ "$DOCKER_AVAILABLE" = "true" ]; then
           echo "=== Docker Compose Information ==="
-          if docker compose version &> /dev/null; then
-            COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || echo "unknown")
+          if docker-compose version &> /dev/null; then
+            COMPOSE_VERSION=$(docker-compose version --short 2>/dev/null || echo "unknown")
             echo "Docker Compose version: $COMPOSE_VERSION"
           elif command -v docker-compose &> /dev/null; then
             COMPOSE_VERSION=$(docker-compose version --short 2>/dev/null || echo "unknown")
