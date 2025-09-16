@@ -19,34 +19,6 @@ inputs:
     required: false
     default: 'false'
 
-outputs:
-  os-info:
-    description: 'Operating system information (JSON format)'
-    value: ${{ steps.system-info.outputs.os_info }}
-  cpu-info:
-    description: 'CPU information (JSON format)'
-    value: ${{ steps.system-info.outputs.cpu_info }}
-  memory-info:
-    description: 'Memory information (JSON format)'
-    value: ${{ steps.system-info.outputs.memory_info }}
-  gpu-available:
-    description: 'Whether GPU is available'
-    value: ${{ steps.gpu-info.outputs.gpu_available }}
-  gpu-info:
-    description: 'GPU information (JSON format)'
-    value: ${{ steps.gpu-info.outputs.gpu_info }}
-  cuda-available:
-    description: 'Whether CUDA is available'
-    value: ${{ steps.cuda-info.outputs.cuda_available }}
-  cuda-version:
-    description: 'CUDA version if available'
-    value: ${{ steps.cuda-info.outputs.cuda_version }}
-  docker-available:
-    description: 'Whether Docker is available'
-    value: ${{ steps.docker-info.outputs.docker_available }}
-  docker-info:
-    description: 'Docker information (JSON format)'
-    value: ${{ steps.docker-info.outputs.docker_info }}
 
 runs:
   using: "composite"
@@ -91,18 +63,13 @@ runs:
           uname -a
         fi
         
-        # Create OS info JSON (using multiline output to handle special characters)
-        OS_INFO_JSON=$(jq -n \
-          --arg name "$OS_NAME" \
-          --arg release "$OS_RELEASE" \
-          --arg version "$OS_VERSION" \
-          --arg arch "$(uname -m)" \
-          --arg kernel "$(uname -r)" \
-          '{name: $name, release: $release, version: $version, architecture: $arch, kernel: $kernel}')
-        
-        echo "os_info<<EOF" >> $GITHUB_OUTPUT
-        echo "$OS_INFO_JSON" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        echo "========== OS Information Summary =========="
+        echo "OS Name: $OS_NAME"
+        echo "OS Release: $OS_RELEASE"
+        echo "OS Version: $OS_VERSION"
+        echo "Architecture: $(uname -m)"
+        echo "Kernel: $(uname -r)"
+        echo "============================================="
         
         # CPU Information
         echo "=== CPU Information ==="
@@ -124,15 +91,10 @@ runs:
           echo "CPU information tools not available"
         fi
         
-        # Create CPU info JSON (using multiline output to handle special characters)
-        CPU_INFO_JSON=$(jq -n \
-          --arg count "$CPU_COUNT" \
-          --arg model "$CPU_MODEL" \
-          '{count: $count, model: $model}')
-        
-        echo "cpu_info<<EOF" >> $GITHUB_OUTPUT
-        echo "$CPU_INFO_JSON" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        echo "========== CPU Information Summary =========="
+        echo "CPU Count: $CPU_COUNT"
+        echo "CPU Model: $CPU_MODEL"
+        echo "=============================================="
         
         # Memory Information
         echo "=== Memory Information ==="
@@ -153,15 +115,18 @@ runs:
           echo "Memory information tools not available"
         fi
         
-        # Create memory info JSON (using multiline output to handle special characters)
-        MEMORY_INFO_JSON=$(jq -n \
-          --arg total "$TOTAL_MEM" \
-          --arg available "$AVAILABLE_MEM" \
-          '{total: $total, available: $available}')
-        
-        echo "memory_info<<EOF" >> $GITHUB_OUTPUT
-        echo "$MEMORY_INFO_JSON" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        echo "========== Memory Information Summary =========="
+        if [ "$TOTAL_MEM" != "unknown" ] && [ -n "$TOTAL_MEM" ]; then
+          echo "Total Memory: $(numfmt --to=iec --suffix=B $TOTAL_MEM 2>/dev/null || echo $TOTAL_MEM)"
+        else
+          echo "Total Memory: $TOTAL_MEM"
+        fi
+        if [ "$AVAILABLE_MEM" != "unknown" ] && [ -n "$AVAILABLE_MEM" ]; then
+          echo "Available Memory: $(numfmt --to=iec --suffix=B $AVAILABLE_MEM 2>/dev/null || echo $AVAILABLE_MEM)"
+        else
+          echo "Available Memory: $AVAILABLE_MEM"
+        fi
+        echo "================================================"
         
         echo "=== Disk Space ==="
         df -h
@@ -225,20 +190,18 @@ runs:
           echo "INFO: clinfo not available"
         fi
         
-        # Set outputs
-        echo "gpu_available=${GPU_AVAILABLE}" >> $GITHUB_OUTPUT
-        
-        # Create GPU info JSON (using multiline output to handle special characters)
-        GPU_INFO_JSON=$(jq -n \
-          --arg available "$GPU_AVAILABLE" \
-          --arg count "$GPU_COUNT" \
-          --arg models "$GPU_MODELS" \
-          --arg nvidia_driver "$NVIDIA_DRIVER" \
-          '{available: ($available == "true"), count: $count, models: $models, nvidia_driver: $nvidia_driver}')
-        
-        echo "gpu_info<<EOF" >> $GITHUB_OUTPUT
-        echo "$GPU_INFO_JSON" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        echo "========== GPU Information Summary =========="
+        echo "GPU Available: $GPU_AVAILABLE"
+        if [ "$GPU_AVAILABLE" = "true" ]; then
+          echo "GPU Count: $GPU_COUNT"
+          echo "GPU Models: $GPU_MODELS"
+          if [ -n "$NVIDIA_DRIVER" ] && [ "$NVIDIA_DRIVER" != "unknown" ]; then
+            echo "NVIDIA Driver Version: $NVIDIA_DRIVER"
+          fi
+        else
+          echo "No GPU detected or GPU tools not available"
+        fi
+        echo "=============================================="
 
     - name: Check CUDA information
       id: cuda-info
@@ -287,9 +250,12 @@ runs:
           echo "INFO: cuDNN not found"
         fi
         
-        # Set outputs
-        echo "cuda_available=${CUDA_AVAILABLE}" >> $GITHUB_OUTPUT
-        echo "cuda_version=${CUDA_VERSION}" >> $GITHUB_OUTPUT
+        echo "========== CUDA Information Summary =========="
+        echo "CUDA Available: $CUDA_AVAILABLE"
+        if [ "$CUDA_AVAILABLE" = "true" ] && [ -n "$CUDA_VERSION" ]; then
+          echo "CUDA Version: $CUDA_VERSION"
+        fi
+        echo "=============================================="
 
     - name: Check Docker information
       id: docker-info
@@ -335,51 +301,34 @@ runs:
           docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | head -10 || echo "No containers or Docker not accessible"
         fi
         
-        # Set outputs
-        echo "docker_available=${DOCKER_AVAILABLE}" >> $GITHUB_OUTPUT
-        
-        # Create Docker info JSON (using multiline output to handle special characters)
-        DOCKER_INFO_JSON=$(jq -n \
-          --arg available "$DOCKER_AVAILABLE" \
-          --arg docker_version "$DOCKER_VERSION" \
-          --arg compose_version "$COMPOSE_VERSION" \
-          '{available: ($available == "true"), docker_version: $docker_version, compose_version: $compose_version}')
-        
-        echo "docker_info<<EOF" >> $GITHUB_OUTPUT
-        echo "$DOCKER_INFO_JSON" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        echo "========== Docker Information Summary =========="
+        echo "Docker Available: $DOCKER_AVAILABLE"
+        if [ "$DOCKER_AVAILABLE" = "true" ]; then
+          echo "Docker Version: $DOCKER_VERSION"
+          echo "Docker Compose Version: $COMPOSE_VERSION"
+        else
+          echo "Docker is not available or not accessible"
+        fi
+        echo "================================================"
 
-    - name: Summary report
+    - name: Final summary
       shell: bash
       run: |
-        echo "SUMMARY: System Information Summary:"
-        OS_RELEASE=$(echo '${{ steps.system-info.outputs.os_info }}' | jq -r '.release // "unknown"')
-        echo "   OS: ${OS_RELEASE}"
-        CPU_MODEL=$(echo '${{ steps.system-info.outputs.cpu_info }}' | jq -r '.model // "unknown"')
-        CPU_COUNT=$(echo '${{ steps.system-info.outputs.cpu_info }}' | jq -r '.count // "unknown"')
-        echo "   CPU: ${CPU_MODEL} (${CPU_COUNT} cores)"
+        echo "================================================================"
+        echo "              SYSTEM INFORMATION COLLECTION COMPLETE"
+        echo "================================================================"
+        echo "✅ All system information has been collected and logged above"
+        echo "✅ OS, CPU, Memory, and Disk information: Available"
         
         if [ "${{ inputs.check-gpu }}" = "true" ]; then
-          echo "   GPU: ${{ steps.gpu-info.outputs.gpu_available }}"
-          if [ "${{ steps.gpu-info.outputs.gpu_available }}" = "true" ]; then
-            echo "   CUDA: ${{ steps.cuda-info.outputs.cuda_available }}"
-          fi
+          echo "✅ GPU and CUDA information: Checked"
         fi
         
         if [ "${{ inputs.check-docker }}" = "true" ]; then
-          echo "   Docker: ${{ steps.docker-info.outputs.docker_available }}"
+          echo "✅ Docker information: Checked"
         fi
         
-        if [ "${{ inputs.enable-debug }}" = "true" ]; then
-          echo "DEBUG: All output variables:"
-          echo "DEBUG: OS Info: ${{ steps.system-info.outputs.os_info }}"
-          echo "DEBUG: CPU Info: ${{ steps.system-info.outputs.cpu_info }}"
-          echo "DEBUG: Memory Info: ${{ steps.system-info.outputs.memory_info }}"
-          if [ "${{ inputs.check-gpu }}" = "true" ]; then
-            echo "DEBUG: GPU Info: ${{ steps.gpu-info.outputs.gpu_info }}"
-          fi
-          if [ "${{ inputs.check-docker }}" = "true" ]; then
-            echo "DEBUG: Docker Info: ${{ steps.docker-info.outputs.docker_info }}"
-          fi
-        fi
+        echo "================================================================"
+        echo "Review the detailed information in the logs above"
+        echo "================================================================"
 
