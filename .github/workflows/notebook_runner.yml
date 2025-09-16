@@ -50,9 +50,8 @@ jobs:
     env:
       DEPLOY_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}
 
-      # Repository information
-      TEST_REPOSITORY: ${{ vars.TEST_REPOSITORY || 'NVIDIA-AI-Blueprints/blueprint-github-test' }}
-      GITHUB_API_BASE: ${{ vars.GITHUB_API_BASE || 'https://api.github.com' }}
+      # Test image information
+      TEST_IMAGE: "nvcr.io/rw983xdqtcdp/auto_test_team/blueprint-github-test-image:latest"
 
       #### VARS
       DOCKER_IMG_NAME: "nvcr.io/nvidia/rapidsai/notebooks"
@@ -92,30 +91,6 @@ jobs:
       - name: Checkout BP repository
         uses: actions/checkout@v4
 
-      - name: Verify Token Access
-        run: |
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.BLUEPRINT_GITHUB_TEST}}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "${{ env.GITHUB_API_BASE }}/repos/${{ env.TEST_REPOSITORY }}")
-
-          if [ "$RESPONSE" = "200" ]; then
-            echo "✓ Repository accessible"
-          elif [ "$RESPONSE" = "404" ]; then
-            echo "✗ Repository not found (check name/visibility)"
-            exit 1
-          else
-            echo "✗ Unexpected response: $RESPONSE"
-            exit 1
-          fi
-
-      - name: Checkout Test repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.TEST_REPOSITORY }}
-          token: ${{ secrets.BLUEPRINT_GITHUB_TEST }}
-          path: blueprint-github-test
-          fetch-depth: 1
 
       - uses: ./.github/actions/setup-env
         with:
@@ -133,6 +108,17 @@ jobs:
           show-system-info: true
           update-packages: true
           enable-debug: false
+
+      - name: Login to NGC and pull test image
+        run: |
+          echo "Logging into NGC registry..."
+          echo "${{ secrets.NGC_API_KEY }}" | docker login nvcr.io -u '$oauthtoken' --password-stdin
+          
+          echo "Pulling test image..."
+          docker pull ${{ env.TEST_IMAGE }}
+          
+          echo "Test image pulled successfully"
+          docker images | grep "blueprint-github-test-image" || echo "Image not found in list"
 
       - uses: ./.github/actions/check-sysinfo
 
@@ -326,169 +312,112 @@ jobs:
       #       echo "xpassed=$xpassed" >> $GITHUB_OUTPUT
       #     '
 
-      - name: Install Poetry/Dependencies and execute pytest
+      - name: Run pytest with test image
         id: run-pytest
-        uses: ./.github/actions/container-exec
-        with:
-          action: exec
-          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-          service-name: backend
-          user: rapids
-          working-dir: /home/rapids
-          timeout-minutes: 45
-          script-content: |
-            set -euxo pipefail
-            cd blueprint-github-test
-
-            OUTPUT_NOTEBOOK_HTML="${{ env.OUTPUT_NOTEBOOK_HTML }}"
-            OUTPUT_PYTEST_COVERAGE_XML="${{ env.OUTPUT_PYTEST_COVERAGE_XML }}"
-            OUTPUT_PYTEST_RESULT_XML="${{ env.OUTPUT_PYTEST_RESULT_XML }}"
-            OUTPUT_PYTEST_REPORT_HTML="${{ env.OUTPUT_PYTEST_REPORT_HTML }}"
-            DOCKER_WRITEABLE_DIR="${{ env.DOCKER_WRITEABLE_DIR }}"
-            NOTEBOOK_BASENAME="${{ steps.set_global_vars.outputs.notebook_basename }}"
-
-            export PATH="/home/rapids/.local/bin:$PATH"
-            python -m pip install --upgrade pip
-            curl -sSL https://install.python-poetry.org | python3 -
-
-            poetry config virtualenvs.create true
-            poetry install --no-interaction --no-root
-
-            if [ -d "cloudia" ]; then
-              pushd cloudia
-              pip install -e .
-              popd
-            fi
-
-            source "$(poetry env info --path)/bin/activate"
-
-            rm -rf input/*
-            mkdir -p input
-            cp "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML" "input/$NOTEBOOK_BASENAME.html"
-
-            echo "Current directory: $(pwd)"
-            echo "Python path: $(which python)"
-            echo "Poetry env: $(poetry env info)"
-
-            TEST_OUTPUT=$(poetry run pytest -m single_cell \
-              --cov=./ \
-              --cov-report=xml:"$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_COVERAGE_XML" \
-              --junitxml:"$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" \
-              --html:"$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_REPORT_HTML" \
-              --self-contained-html 2>&1) || true
-
-            RESULTS_FILE="$DOCKER_WRITEABLE_DIR/test_results.txt"
-            echo "TEST_OUTPUT_START" > "$RESULTS_FILE"
-            echo "$TEST_OUTPUT" >> "$RESULTS_FILE"
-            echo "TEST_OUTPUT_END" >> "$RESULTS_FILE"
-
-            parse_xml() {
-              local file="$1"
-              local xpath="$2"
-              xmllint --xpath "$xpath" "$file" 2>/dev/null || echo "0"
-            }
-
-            passed=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[not(skipped) and not(failure) and not(error)])')
-            failures=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[failure])')
-            errors=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[error])')
-            skipped=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[skipped])')
-            xfailed=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[contains(@name, "[xfail]")])')
-            xpassed=$(parse_xml "$DOCKER_WRITEABLE_DIR/$OUTPUT_PYTEST_RESULT_XML" 'count(//testcase[contains(@name, "[xpass]")])')
-            actual_passed=$((passed - xpassed))
-
-            {
-              echo "passed=$actual_passed"
-              echo "failed=$failures"
-              echo "skipped=$skipped"
-              echo "errors=$errors"
-              echo "xfailed=$xfailed"
-              echo "xpassed=$xpassed"
-            } >> "$RESULTS_FILE"
+        run: |
+          set -euo pipefail
+          
+          # Prepare directories
+          mkdir -p ${{ env.ARTIFACT_DIR }}
+          NOTEBOOK_BASENAME="${{ steps.set_global_vars.outputs.notebook_basename }}"
+          
+          echo "Running pytest using test image: ${{ env.TEST_IMAGE }}"
+          echo "Input notebook HTML: ${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          echo "Notebook basename: $NOTEBOOK_BASENAME"
+          
+          # Run pytest with the dedicated test image
+          docker run --rm \
+            -v "${{ github.workspace }}/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_NOTEBOOK_HTML }}":/app/input/${NOTEBOOK_BASENAME}.html \
+            -v "${{ github.workspace }}:/workspace" \
+            ${{ env.TEST_IMAGE }} \
+            pytest -m "single_cell" \
+              --disable-warnings \
+              --html=/workspace/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_PYTEST_REPORT_HTML }} \
+              --self-contained-html \
+              --junitxml=/workspace/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_PYTEST_RESULT_XML }} \
+              || echo "Pytest completed with exit code $?"
+          
+          # Verify test outputs were created
+          echo "Checking test outputs:"
+          ls -la ${{ env.ARTIFACT_DIR }}/
+          
+          # Create a simple results summary
+          if [ -f "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_RESULT_XML }}" ]; then
+            echo "Test results XML found"
+            echo "test_results_available=true" >> $GITHUB_OUTPUT
+          else
+            echo "Test results XML not found"
+            echo "test_results_available=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Process test results
         id: process-test-results
+        if: steps.run-pytest.outputs.test_results_available == 'true'
         run: |
-          RESULTS_CONTENT=$(docker compose -f "${{ env.DOCKER_COMPOSE_FILE }}" exec -T backend \
-            cat "${{ env.DOCKER_WRITEABLE_DIR }}/test_results.txt" 2>/dev/null || echo "RESULTS_ERROR")
-
-          if [ "$RESULTS_CONTENT" = "RESULTS_ERROR" ]; then
-            echo "ERROR: Failed to retrieve test results"
+          set -euo pipefail
+          
+          XML_FILE="${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_RESULT_XML }}"
+          HTML_FILE="${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_REPORT_HTML }}"
+          
+          if [ ! -f "$XML_FILE" ]; then
+            echo "ERROR: Test results XML file not found: $XML_FILE"
+            echo "Available files:"
+            ls -la ${{ env.ARTIFACT_DIR }}/
             exit 1
           fi
-
-          TEST_OUTPUT=$(sed -n '/TEST_OUTPUT_START/,/TEST_OUTPUT_END/{/TEST_OUTPUT_START/!{/TEST_OUTPUT_END/!p}}' <<< "$RESULTS_CONTENT")
-
-          echo "TEST_OUTPUT<<EOF" >> $GITHUB_ENV
-          echo "$TEST_OUTPUT" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-
-          extract_metric() {
-            echo "$RESULTS_CONTENT" | grep "^$1=" | cut -d= -f2 || echo "0"
+          
+          echo "Processing test results from: $XML_FILE"
+          
+          # Extract test metrics using xmllint
+          parse_xml() {
+            local xpath="$1"
+            xmllint --xpath "$xpath" "$XML_FILE" 2>/dev/null || echo "0"
           }
-          echo "passed=$(extract_metric passed)" >> $GITHUB_OUTPUT
-          echo "failed=$(extract_metric failed)" >> $GITHUB_OUTPUT
-          echo "skipped=$(extract_metric skipped)" >> $GITHUB_OUTPUT
-          echo "errors=$(extract_metric errors)" >> $GITHUB_OUTPUT
-          echo "xfailed=$(extract_metric xfailed)" >> $GITHUB_OUTPUT
-          echo "xpassed=$(extract_metric xpassed)" >> $GITHUB_OUTPUT
-
+          
+          passed=$(parse_xml 'count(//testcase[not(skipped) and not(failure) and not(error)])')
+          failures=$(parse_xml 'count(//testcase[failure])')
+          errors=$(parse_xml 'count(//testcase[error])')
+          skipped=$(parse_xml 'count(//testcase[skipped])')
+          
+          echo "passed=$passed" >> $GITHUB_OUTPUT
+          echo "failed=$failures" >> $GITHUB_OUTPUT
+          echo "skipped=$skipped" >> $GITHUB_OUTPUT
+          echo "errors=$errors" >> $GITHUB_OUTPUT
+          echo "xfailed=0" >> $GITHUB_OUTPUT
+          echo "xpassed=0" >> $GITHUB_OUTPUT
+          
+          # Create test results JSON
+          TEST_RESULTS_JSON=$(cat << EOF
+          {
+            "passed": $passed,
+            "failed": $failures,
+            "skipped": $skipped,
+            "errors": $errors,
+            "total": $((passed + failures + skipped + errors))
+          }
+          EOF
+          )
+          
+          echo "test_results_json<<EOF" >> $GITHUB_OUTPUT
+          echo "$TEST_RESULTS_JSON" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
           echo "### Test Results Summary" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "$TEST_OUTPUT" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "- Passed: $passed" >> $GITHUB_STEP_SUMMARY
+          echo "- Failed: $failures" >> $GITHUB_STEP_SUMMARY
+          echo "- Errors: $errors" >> $GITHUB_STEP_SUMMARY
+          echo "- Skipped: $skipped" >> $GITHUB_STEP_SUMMARY
+          echo "- Total: $((passed + failures + skipped + errors))" >> $GITHUB_STEP_SUMMARY
 
-      - name: Copy result files from container to runner
-        id: prepare-result-file
-        if: >
-          steps.generate-notebook-html.outcome == 'success' &&
-          steps.run-pytest.outcome == 'success'
-        run: |
-          pwd
-          ls -al
-
-          OUTPUT_NOTEBOOK_HTML="${{ env.OUTPUT_NOTEBOOK_HTML }}"
-          OUTPUT_PYTEST_COVERAGE_XML="${{ env.OUTPUT_PYTEST_COVERAGE_XML }}"
-          OUTPUT_PYTEST_RESULT_XML="${{ env.OUTPUT_PYTEST_RESULT_XML }}"
-          OUTPUT_PYTEST_REPORT_HTML="${{ env.OUTPUT_PYTEST_REPORT_HTML }}"
-          DOCKER_WRITEABLE_DIR="${{ env.DOCKER_WRITEABLE_DIR }}"
-          ARTIFACT_DIR="${{ env.ARTIFACT_DIR }}"
-
-          mkdir -p "$ARTIFACT_DIR" || exit 1
-
-      - name: Copy HTML result from container
+      - name: Copy notebook HTML result from container
+        id: copy-notebook-html
+        if: steps.generate-notebook-html.outcome == 'success'
         uses: ./.github/actions/container-exec
         with:
           action: copy-from
           compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
           service-name: backend
           source-path: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}
-          dest-path: ${{ env.ARTIFACT_DIR }}
-
-      - name: Copy test coverage from container
-        uses: ./.github/actions/container-exec
-        with:
-          action: copy-from
-          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-          service-name: backend
-          source-path: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_PYTEST_COVERAGE_XML }}
-          dest-path: ${{ env.ARTIFACT_DIR }}
-
-      - name: Copy test results from container
-        uses: ./.github/actions/container-exec
-        with:
-          action: copy-from
-          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-          service-name: backend
-          source-path: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_PYTEST_RESULT_XML }}
-          dest-path: ${{ env.ARTIFACT_DIR }}
-
-      - name: Copy test report from container
-        uses: ./.github/actions/container-exec
-        with:
-          action: copy-from
-          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-          service-name: backend
-          source-path: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_PYTEST_REPORT_HTML }}
           dest-path: ${{ env.ARTIFACT_DIR }}
 
       - name: Generate result metadata
@@ -509,16 +438,16 @@ jobs:
           ls -al "${{ github.workspace }}/json-results"
 
       - name: Upload the result notebook as artifact
-        if: steps.prepare-result-file.outcome == 'success'
+        if: always() && (steps.copy-notebook-html.outcome == 'success' || steps.run-pytest.outcome == 'success')
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.set_global_vars.outputs.artifact_name }}
           path: ${{ env.ARTIFACT_DIR }}/
           retention-days: 30
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Upload JSON test results
-        if: steps.prepare-result-file.outcome == 'success'
+        if: steps.process-test-results.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: json-results-${{ matrix.NOTEBOOK_FILENAME }}
