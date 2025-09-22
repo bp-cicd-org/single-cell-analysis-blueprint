@@ -66,6 +66,79 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Setup Docker Compose compatibility
+      id: setup-compose
+      shell: bash
+      run: |
+        echo "INFO: Setting up Docker Compose compatibility layer..."
+        
+        # Create compatibility detection function
+        cat > /tmp/compose-compat.sh << 'EOF'
+        #!/bin/bash
+        
+        # Smart Docker Compose compatibility detection
+        detect_compose_cmd() {
+          local compose_cmd=""
+          local file_flag=""
+          
+          # Test docker compose (plugin) first
+          if docker compose version >/dev/null 2>&1; then
+            if docker compose --help 2>/dev/null | grep -q "\-\-file"; then
+              compose_cmd="docker compose"
+              file_flag="--file"
+              echo "INFO: Using 'docker compose' with '--file' flag" >&2
+            elif docker compose --help 2>/dev/null | grep -q "\-f"; then
+              compose_cmd="docker compose"
+              file_flag="-f"
+              echo "INFO: Using 'docker compose' with '-f' flag" >&2
+            fi
+          fi
+          
+          # Fallback to standalone docker-compose
+          if [ -z "$compose_cmd" ] && command -v docker-compose >/dev/null 2>&1; then
+            if docker-compose --help 2>/dev/null | grep -q "\-\-file"; then
+              compose_cmd="docker-compose"
+              file_flag="--file"
+              echo "INFO: Using 'docker-compose' with '--file' flag" >&2
+            else
+              compose_cmd="docker-compose"
+              file_flag="-f"
+              echo "INFO: Using 'docker-compose' with '-f' flag" >&2
+            fi
+          fi
+          
+          # Validate we found a working command
+          if [ -z "$compose_cmd" ]; then
+            echo "ERROR: No working Docker Compose command found" >&2
+            echo "Available commands:" >&2
+            command -v docker && echo "  - docker: $(docker version --format '{{.Client.Version}}' 2>/dev/null || echo 'unknown')" >&2
+            command -v docker-compose && echo "  - docker-compose: $(docker-compose --version 2>/dev/null || echo 'unknown')" >&2
+            return 1
+          fi
+          
+          # Export for use in subsequent commands
+          echo "COMPOSE_CMD=$compose_cmd" >> $GITHUB_ENV
+          echo "COMPOSE_FILE_FLAG=$file_flag" >> $GITHUB_ENV
+          
+          echo "SUCCESS: Using command: $compose_cmd $file_flag" >&2
+          return 0
+        }
+        
+        # Execute detection
+        detect_compose_cmd
+        EOF
+        
+        # Make script executable and run it
+        chmod +x /tmp/compose-compat.sh
+        source /tmp/compose-compat.sh
+        
+        # Verify environment variables were set
+        echo "Detected compose command: $COMPOSE_CMD"
+        echo "Detected file flag: $COMPOSE_FILE_FLAG"
+        
+        # Output for other steps
+        echo "compose_cmd=$COMPOSE_CMD" >> $GITHUB_OUTPUT
+        echo "file_flag=$COMPOSE_FILE_FLAG" >> $GITHUB_OUTPUT
     - name: Validate inputs
       shell: bash
       run: |
@@ -123,9 +196,12 @@ runs:
       run: |
         start_time=$(date +%s)
         
+        # Use detected compose command
+        echo "INFO: Using compose command: $COMPOSE_CMD $COMPOSE_FILE_FLAG"
+        
         if [ "${{ inputs.action }}" = "restart" ]; then
           echo "INFO: Stopping existing containers first..."
-          docker compose --file "${{ inputs.compose-file }}" down
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" down
         fi
         
         echo "INFO: Starting container with compose file: ${{ inputs.compose-file }}"
@@ -137,14 +213,15 @@ runs:
           env | grep -E "(DOCKER_IMG_TAG|NOTEBOOKS_HOST_PATH|COMPOSE_HTTP_TIMEOUT)"
           echo "DEBUG: Current directory contents:"
           pwd && ls -al ./
+          echo "DEBUG: Compose command: $COMPOSE_CMD $COMPOSE_FILE_FLAG"
         fi
         
         set -e
-        echo "INFO: Starting containers with docker compose..."
-        if ! docker compose --file "${{ inputs.compose-file }}" up -d --wait --force-recreate; then
+        echo "INFO: Starting containers with $COMPOSE_CMD..."
+        if ! $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" up -d --wait --force-recreate; then
           echo "ERROR: Failed to start containers"
           echo "INFO: Attempting to get more details..."
-          docker compose --file "${{ inputs.compose-file }}" logs || true
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs || true
           exit 1
         fi
         
@@ -158,7 +235,8 @@ runs:
       shell: bash
       run: |
         echo "INFO: Stopping containers..."
-        docker compose --file "${{ inputs.compose-file }}" down
+        echo "INFO: Using compose command: $COMPOSE_CMD $COMPOSE_FILE_FLAG"
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" down
         echo "SUCCESS: Containers stopped successfully"
 
     - name: Get container status
@@ -170,7 +248,7 @@ runs:
         docker ps -a
         
         # Get specific container info
-        CONTAINER_ID=$(docker compose --file "${{ inputs.compose-file }}" ps -q "${{ inputs.service-name }}" 2>/dev/null || echo "")
+        CONTAINER_ID=$($COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps -q "${{ inputs.service-name }}" 2>/dev/null || echo "")
         if [ -n "$CONTAINER_ID" ]; then
           CONTAINER_STATUS=$(docker inspect "$CONTAINER_ID" --format='{{.State.Status}}' 2>/dev/null || echo "unknown")
           echo "container_id=${CONTAINER_ID}" >> $GITHUB_OUTPUT
@@ -190,7 +268,7 @@ runs:
         LOGS_FILE="docker-logs-${{ inputs.service-name }}.txt"
         echo "INFO: Retrieving container logs (last ${{ inputs.log-lines }} lines)..."
         
-        if docker compose --file "${{ inputs.compose-file }}" logs --no-color --tail=${{ inputs.log-lines }} "${{ inputs.service-name }}" > "$LOGS_FILE" 2>&1; then
+        if $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs --no-color --tail=${{ inputs.log-lines }} "${{ inputs.service-name }}" > "$LOGS_FILE" 2>&1; then
           echo "SUCCESS: Logs saved to $LOGS_FILE"
           echo "logs_file=${LOGS_FILE}" >> $GITHUB_OUTPUT
           
@@ -209,14 +287,14 @@ runs:
         echo "INFO: Preparing container environment for service ${{ inputs.service-name }}..."
         
         # Install system packages as root
-        docker compose --file "${{ inputs.compose-file }}" exec -u root "${{ inputs.service-name }}" bash -c '
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -u root "${{ inputs.service-name }}" bash -c '
           apt-get update
           apt-get install -y libxml2-utils
           apt-get clean
         '
         
         # Setup user environment
-        docker compose --file "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" bash <<'EOF'
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" bash <<'EOF'
         set -euxo pipefail
         
         whoami
@@ -253,7 +331,7 @@ runs:
         echo "User: ${{ inputs.user }}"
         echo "Working directory: ${{ inputs.working-dir }}"
         
-        docker compose --file "${{ inputs.compose-file }}" exec \
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec \
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \

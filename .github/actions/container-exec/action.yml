@@ -93,6 +93,47 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Setup Docker Compose compatibility
+      shell: bash
+      run: |
+        echo "INFO: Setting up Docker Compose compatibility for container-exec..."
+        
+        # Smart Docker Compose compatibility detection
+        compose_cmd=""
+        file_flag=""
+        
+        # Test docker compose (plugin) first
+        if docker compose version >/dev/null 2>&1; then
+          if docker compose --help 2>/dev/null | grep -q "\-\-file"; then
+            compose_cmd="docker compose"
+            file_flag="--file"
+            echo "INFO: Using 'docker compose' with '--file' flag"
+          elif docker compose --help 2>/dev/null | grep -q "\-f"; then
+            compose_cmd="docker compose"
+            file_flag="-f"
+            echo "INFO: Using 'docker compose' with '-f' flag"
+          fi
+        fi
+        
+        # Fallback to standalone docker-compose
+        if [ -z "$compose_cmd" ] && command -v docker-compose >/dev/null 2>&1; then
+          if docker-compose --help 2>/dev/null | grep -q "\-\-file"; then
+            compose_cmd="docker-compose"
+            file_flag="--file"
+            echo "INFO: Using 'docker-compose' with '--file' flag"
+          else
+            compose_cmd="docker-compose"
+            file_flag="-f"
+            echo "INFO: Using 'docker-compose' with '-f' flag"
+          fi
+        fi
+        
+        # Export for use in subsequent commands
+        echo "COMPOSE_CMD=$compose_cmd" >> $GITHUB_ENV
+        echo "COMPOSE_FILE_FLAG=$file_flag" >> $GITHUB_ENV
+        
+        echo "SUCCESS: Using command: $compose_cmd $file_flag"
+        
     - name: Validate inputs
       shell: bash
       run: |
@@ -154,7 +195,7 @@ runs:
         echo "Source: ${{ inputs.source-path }}"
         echo "Destination: ${{ inputs.dest-path }}"
         
-        docker compose --file "${{ inputs.compose-file }}" cp \
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" cp \
           "${{ inputs.source-path }}" \
           "${{ inputs.service-name }}:${{ inputs.dest-path }}"
         
@@ -173,7 +214,7 @@ runs:
         echo "Source: ${{ inputs.source-path }}"
         echo "Destination: ${{ inputs.dest-path }}"
         
-        docker compose --file "${{ inputs.compose-file }}" cp \
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" cp \
           "${{ inputs.service-name }}:${{ inputs.source-path }}" \
           "${{ inputs.dest-path }}"
         
@@ -209,14 +250,14 @@ runs:
         if [ "${{ inputs.notebook-params }}" != "{}" ]; then
           PARAMS_FILE=$(mktemp)
           echo '${{ inputs.notebook-params }}' > "$PARAMS_FILE"
-          docker compose --file "${{ inputs.compose-file }}" cp "$PARAMS_FILE" "${{ inputs.service-name }}:/tmp/notebook_params.json"
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" cp "$PARAMS_FILE" "${{ inputs.service-name }}:/tmp/notebook_params.json"
           PAPERMILL_CMD="$PAPERMILL_CMD --parameters_file /tmp/notebook_params.json"
           rm -f "$PARAMS_FILE"
         fi
         
         # Execute notebook
         timeout $((${{ inputs.timeout-minutes }} * 60)) \
-        docker compose --file "${{ inputs.compose-file }}" exec -T \
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T \
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \
@@ -254,7 +295,7 @@ runs:
         echo "log_file=${LOG_FILE}" >> $GITHUB_OUTPUT
         
         # Execute conversion
-        docker compose --file "${{ inputs.compose-file }}" exec -T \
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T \
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \
@@ -298,7 +339,7 @@ runs:
         TEST_CMD="$TEST_CMD --junitxml=test-results.xml --html=test-report.html --self-contained-html"
         
         # Execute tests
-        docker compose --file "${{ inputs.compose-file }}" exec -T \
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T \
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \
@@ -336,7 +377,7 @@ runs:
           SCRIPT_EOF
           
           timeout $((${{ inputs.timeout-minutes }} * 60)) \
-          docker compose --file "${{ inputs.compose-file }}" exec -T \
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T \
             -u "${{ inputs.user }}" \
             -w "${{ inputs.working-dir }}" \
             "${{ inputs.service-name }}" \
@@ -348,7 +389,7 @@ runs:
           # Execute single command
           echo "INFO: Executing command: ${{ inputs.command }}"
           timeout $((${{ inputs.timeout-minutes }} * 60)) \
-          docker compose --file "${{ inputs.compose-file }}" exec -T \
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T \
             -u "${{ inputs.user }}" \
             -w "${{ inputs.working-dir }}" \
             "${{ inputs.service-name }}" \
@@ -394,7 +435,7 @@ runs:
         echo "log_file=${LOG_FILE}" >> $GITHUB_OUTPUT
         
         # List files created in working directory
-        FILES_CREATED=$(docker compose --file "${{ inputs.compose-file }}" exec -T \
+        FILES_CREATED=$($COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T \
           "${{ inputs.service-name }}" \
           find "${{ inputs.working-dir }}" -maxdepth 1 -type f -newer "${{ inputs.working-dir }}" 2>/dev/null | tr '\n' ',' || echo "")
         echo "files_created=${FILES_CREATED}" >> $GITHUB_OUTPUT
@@ -408,7 +449,7 @@ runs:
         
         # Extract test results from XML if available
         RESULTS_FILE=$(mktemp)
-        docker compose --file "${{ inputs.compose-file }}" exec -T \
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T \
           "${{ inputs.service-name }}" \
           cat "${{ inputs.working-dir }}/test-results.xml" > "$RESULTS_FILE" 2>/dev/null || echo "No test results XML found"
         
