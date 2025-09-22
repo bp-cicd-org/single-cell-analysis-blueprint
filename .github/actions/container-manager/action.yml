@@ -225,6 +225,49 @@ runs:
           exit 1
         fi
         
+        # Wait for service to be fully ready
+        echo "INFO: Waiting for service to be fully ready..."
+        SERVICE_READY=false
+        MAX_WAIT_TIME=300  # 5 minutes maximum wait
+        WAIT_INTERVAL=10   # Check every 10 seconds
+        ELAPSED_TIME=0
+        
+        while [ $ELAPSED_TIME -lt $MAX_WAIT_TIME ] && [ "$SERVICE_READY" = "false" ]; do
+          echo "Checking service readiness... (${ELAPSED_TIME}s elapsed)"
+          
+          # Check if container is running
+          if $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps "${{ inputs.service-name }}" | grep -q "Up"; then
+            echo "Container is running, checking if Jupyter is accessible..."
+            
+            # Try to check if Jupyter is responding (if applicable)
+            CONTAINER_IP=$($COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" hostname -i 2>/dev/null | tr -d '\r\n' || echo "localhost")
+            
+            # Check if we can connect to the service
+            if $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" bash -c 'echo "Service check" && ps aux | grep -E "(jupyter|python)" | grep -v grep' >/dev/null 2>&1; then
+              echo "SUCCESS: Service is ready and responding"
+              SERVICE_READY=true
+              break
+            else
+              echo "Service is starting but not yet ready..."
+            fi
+          else
+            echo "Container is not yet running..."
+          fi
+          
+          sleep $WAIT_INTERVAL
+          ELAPSED_TIME=$((ELAPSED_TIME + WAIT_INTERVAL))
+        done
+        
+        if [ "$SERVICE_READY" = "false" ]; then
+          echo "WARNING: Service did not become ready within ${MAX_WAIT_TIME} seconds"
+          echo "Container status:"
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps || true
+          echo "Container logs:"
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs --tail=100 "${{ inputs.service-name }}" || true
+        else
+          echo "SUCCESS: Service is ready for use"
+        fi
+        
         end_time=$(date +%s)
         start_duration=$((end_time - start_time))
         echo "SUCCESS: Container started successfully in ${start_duration} seconds"
@@ -286,20 +329,40 @@ runs:
       run: |
         echo "INFO: Preparing container environment for service ${{ inputs.service-name }}..."
         
+        echo "INFO: Preparing environment for service: ${{ inputs.service-name }}"
+        
         # First verify container is running and accessible
         echo "INFO: Verifying container accessibility..."
         
-        MAX_RETRIES=5
-        RETRY_DELAY=3
+        MAX_RETRIES=15
+        RETRY_DELAY=10
         
         for i in $(seq 1 $MAX_RETRIES); do
           echo "Attempt $i/$MAX_RETRIES: Testing container accessibility..."
           
+          # Check if container is running first
+          if ! $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps "${{ inputs.service-name }}" | grep -q "Up"; then
+            echo "WARNING: Container is not running (attempt $i/$MAX_RETRIES)"
+            if [ $i -lt $MAX_RETRIES ]; then
+              echo "Waiting $RETRY_DELAY seconds for container to start..."
+              sleep $RETRY_DELAY
+              continue
+            else
+              echo "ERROR: Container is not running after $MAX_RETRIES attempts"
+              echo "Container status:"
+              $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps || true
+              echo "Container logs:"
+              $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs --tail=100 "${{ inputs.service-name }}" || true
+              exit 1
+            fi
+          fi
+          
+          # Test container exec accessibility
           if $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" echo "Container is accessible" >/dev/null 2>&1; then
             echo "SUCCESS: Container is accessible"
             break
           else
-            echo "WARNING: Container not accessible yet (attempt $i/$MAX_RETRIES)"
+            echo "WARNING: Container not accessible for exec yet (attempt $i/$MAX_RETRIES)"
             if [ $i -lt $MAX_RETRIES ]; then
               echo "Waiting $RETRY_DELAY seconds before retry..."
               sleep $RETRY_DELAY
@@ -308,7 +371,7 @@ runs:
               echo "Container status:"
               $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps || true
               echo "Container logs:"
-              $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs --tail=50 "${{ inputs.service-name }}" || true
+              $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs --tail=100 "${{ inputs.service-name }}" || true
               exit 1
             fi
           fi
