@@ -468,9 +468,9 @@ runs:
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \
-          bash <<'EXEC_EOF'
-${{ inputs.command }}
-EXEC_EOF
+          bash <<EXEC_EOF
+        ${{ inputs.command }}
+        EXEC_EOF
 
     - name: Calculate operation time
       shell: bash
