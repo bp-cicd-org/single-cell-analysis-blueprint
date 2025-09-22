@@ -277,24 +277,11 @@ runs:
             
             # Test critical imports before running papermill
             echo 'Testing critical imports...'
-            python -c \"
-import sys
-print('Python sys.path:')
-for p in sys.path:
-    print(f'  {p}')
-
-try:
-    import scanpy as sc
-    print(f'✅ scanpy {sc.__version__} available')
-except ImportError as e:
-    print(f'❌ scanpy import error: {e}')
-    
-try:
-    import rapids_singlecell as rsc
-    print(f'✅ rapids_singlecell {rsc.__version__} available')  
-except ImportError as e:
-    print(f'❌ rapids_singlecell import error: {e}')
-\" || echo 'Import test completed with warnings'
+            echo 'Testing scanpy import...'
+            python -c \"import scanpy as sc; print(f'✅ scanpy {sc.__version__} available')\" || echo '❌ scanpy import failed'
+            
+            echo 'Testing rapids_singlecell import...'
+            python -c \"import rapids_singlecell as rsc; print(f'✅ rapids_singlecell {rsc.__version__} available')\" || echo '❌ rapids_singlecell import failed'
             
             echo 'Starting papermill execution...'
             $PAPERMILL_CMD 2>&1 | tee '${{ inputs.working-dir }}/${LOG_FILE}'

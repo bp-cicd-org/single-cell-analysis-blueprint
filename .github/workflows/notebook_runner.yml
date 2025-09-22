@@ -221,25 +221,11 @@ jobs:
             pip list --user | grep -E "(scanpy|rapids-singlecell)" || echo "No user packages found"
             
             echo "=== Python import test ==="
-            python -c "
-import sys
-print('Python path:')
-for p in sys.path:
-    print(f'  {p}')
-    
-print()
-try:
-    import scanpy as sc
-    print(f'✅ scanpy {sc.__version__} imported successfully')
-except ImportError as e:
-    print(f'❌ scanpy import failed: {e}')
-
-try:
-    import rapids_singlecell as rsc
-    print(f'✅ rapids_singlecell {rsc.__version__} imported successfully')
-except ImportError as e:
-    print(f'❌ rapids_singlecell import failed: {e}')
-"
+            echo "Testing scanpy import..."
+            python -c "import scanpy as sc; print(f'✅ scanpy {sc.__version__} imported successfully')" || echo "❌ scanpy import failed"
+            
+            echo "Testing rapids_singlecell import..."
+            python -c "import rapids_singlecell as rsc; print(f'✅ rapids_singlecell {rsc.__version__} imported successfully')" || echo "❌ rapids_singlecell import failed"
             echo 'Verifying kernel'
             jupyter kernelspec list
 
