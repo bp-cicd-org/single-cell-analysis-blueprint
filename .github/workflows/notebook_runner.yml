@@ -339,13 +339,31 @@ jobs:
       - name: Copy notebook HTML result from container
         id: copy-notebook-html
         if: steps.generate-notebook-html.outcome == 'success'
-        uses: ./.github/actions/container-exec
-        with:
-          action: copy-from
-          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-          service-name: backend
-          source-path: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}
-          dest-path: ${{ env.ARTIFACT_DIR }}
+        run: |
+          # Ensure artifact directory exists
+          mkdir -p ${{ env.ARTIFACT_DIR }}
+          
+          echo "INFO: Copying HTML notebook from container..."
+          echo "Source: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          echo "Destination: ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          
+          # Copy the HTML file from container to host
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ env.DOCKER_COMPOSE_FILE }}" cp \
+            "backend:${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" \
+            "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          
+          echo "SUCCESS: HTML notebook copied successfully"
+          
+          # Verify the file was copied
+          if [ -f "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" ]; then
+            echo "✅ File exists: ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+            ls -la "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          else
+            echo "❌ File not found: ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+            echo "Contents of artifact directory:"
+            ls -la "${{ env.ARTIFACT_DIR }}/"
+            exit 1
+          fi
 
       - name: Generate result metadata
         run: |
