@@ -265,12 +265,25 @@ jobs:
           echo "Input notebook HTML: ${{ env.OUTPUT_NOTEBOOK_HTML }}"
           echo "Notebook basename: $NOTEBOOK_BASENAME"
           
+          # Create single_cell_analysis directory structure expected by tests
+          mkdir -p "${{ env.ARTIFACT_DIR }}/single_cell_analysis"
+          
+          # Copy HTML file to expected location
+          if [ -f "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" ]; then
+            cp "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" "${{ env.ARTIFACT_DIR }}/single_cell_analysis/${NOTEBOOK_BASENAME}.html"
+            echo "HTML file copied to single_cell_analysis directory"
+          else
+            echo "WARNING: HTML file not found at ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+            echo "Available files in artifact directory:"
+            ls -la "${{ env.ARTIFACT_DIR }}/"
+          fi
+          
           # Run pytest with the dedicated test image
           docker run --rm \
-            -v "${{ github.workspace }}/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_NOTEBOOK_HTML }}":/app/input/${NOTEBOOK_BASENAME}.html \
+            -v "${{ env.ARTIFACT_DIR }}/single_cell_analysis":/app/input/single_cell_analysis \
             -v "${{ github.workspace }}:/workspace" \
             ${{ env.TEST_IMAGE }} \
-            pytest -m "single_cell" \
+            pytest -m "single_cell and notebook" \
               --disable-warnings \
               --html=/workspace/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_PYTEST_REPORT_HTML }} \
               --self-contained-html \
