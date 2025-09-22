@@ -218,55 +218,88 @@ runs:
         
         set -e
         echo "INFO: Starting containers with $COMPOSE_CMD..."
-        if ! $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" up -d --wait --force-recreate; then
+        
+        # Remove --wait flag as it's not supported in older docker-compose versions
+        # Use separate health checking logic instead
+        if ! $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" up -d --force-recreate; then
           echo "ERROR: Failed to start containers"
           echo "INFO: Attempting to get more details..."
           $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs || true
           exit 1
         fi
         
-        # Wait for service to be fully ready
-        echo "INFO: Waiting for service to be fully ready..."
-        SERVICE_READY=false
-        MAX_WAIT_TIME=300  # 5 minutes maximum wait
-        WAIT_INTERVAL=10   # Check every 10 seconds
-        ELAPSED_TIME=0
+        echo "SUCCESS: Docker Compose up command completed"
         
-        while [ $ELAPSED_TIME -lt $MAX_WAIT_TIME ] && [ "$SERVICE_READY" = "false" ]; do
-          echo "Checking service readiness... (${ELAPSED_TIME}s elapsed)"
+        # Wait for containers to start and be ready
+        echo "INFO: Waiting for containers to start and be ready..."
+        
+        # First, wait for container to be created and running
+        echo "INFO: Step 1 - Waiting for container to be running..."
+        CONTAINER_RUNNING=false
+        MAX_START_WAIT=120  # 2 minutes for container to start
+        START_INTERVAL=5    # Check every 5 seconds
+        START_ELAPSED=0
+        
+        while [ $START_ELAPSED -lt $MAX_START_WAIT ] && [ "$CONTAINER_RUNNING" = "false" ]; do
+          echo "Checking container status... (${START_ELAPSED}s elapsed)"
           
-          # Check if container is running
-          if $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps "${{ inputs.service-name }}" | grep -q "Up"; then
-            echo "Container is running, checking if Jupyter is accessible..."
-            
-            # Try to check if Jupyter is responding (if applicable)
-            CONTAINER_IP=$($COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" hostname -i 2>/dev/null | tr -d '\r\n' || echo "localhost")
-            
-            # Check if we can connect to the service
-            if $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" bash -c 'echo "Service check" && ps aux | grep -E "(jupyter|python)" | grep -v grep' >/dev/null 2>&1; then
-              echo "SUCCESS: Service is ready and responding"
-              SERVICE_READY=true
+          # Check if any containers are running
+          RUNNING_CONTAINERS=$($COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps -q 2>/dev/null | wc -l)
+          if [ "$RUNNING_CONTAINERS" -gt 0 ]; then
+            # Check specific service
+            if $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps "${{ inputs.service-name }}" 2>/dev/null | grep -q "Up"; then
+              echo "SUCCESS: Container ${{ inputs.service-name }} is running"
+              CONTAINER_RUNNING=true
               break
             else
-              echo "Service is starting but not yet ready..."
+              echo "Container exists but not yet running..."
             fi
           else
-            echo "Container is not yet running..."
+            echo "No containers running yet..."
           fi
           
-          sleep $WAIT_INTERVAL
-          ELAPSED_TIME=$((ELAPSED_TIME + WAIT_INTERVAL))
+          sleep $START_INTERVAL
+          START_ELAPSED=$((START_ELAPSED + START_INTERVAL))
+        done
+        
+        if [ "$CONTAINER_RUNNING" = "false" ]; then
+          echo "ERROR: Container did not start within ${MAX_START_WAIT} seconds"
+          echo "All containers status:"
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps || true
+          echo "Container logs:"
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs || true
+          exit 1
+        fi
+        
+        # Step 2 - Wait for service to be ready inside container
+        echo "INFO: Step 2 - Waiting for services inside container to be ready..."
+        SERVICE_READY=false
+        MAX_SERVICE_WAIT=180  # 3 minutes for services to be ready
+        SERVICE_INTERVAL=10   # Check every 10 seconds
+        SERVICE_ELAPSED=0
+        
+        while [ $SERVICE_ELAPSED -lt $MAX_SERVICE_WAIT ] && [ "$SERVICE_READY" = "false" ]; do
+          echo "Checking service readiness... (${SERVICE_ELAPSED}s elapsed)"
+          
+          # Check if we can exec into container and find running services
+          if $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" bash -c 'echo "Container exec test successful" && ps aux | grep -E "(jupyter|python)" | grep -v grep | head -3' >/dev/null 2>&1; then
+            echo "SUCCESS: Services are running inside container"
+            SERVICE_READY=true
+            break
+          else
+            echo "Services are starting inside container..."
+          fi
+          
+          sleep $SERVICE_INTERVAL
+          SERVICE_ELAPSED=$((SERVICE_ELAPSED + SERVICE_INTERVAL))
         done
         
         if [ "$SERVICE_READY" = "false" ]; then
-          echo "WARNING: Service did not become ready within ${MAX_WAIT_TIME} seconds"
-          echo "Container status:"
-          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps || true
-          echo "Container logs:"
-          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs --tail=100 "${{ inputs.service-name }}" || true
-        else
-          echo "SUCCESS: Service is ready for use"
+          echo "WARNING: Services did not become ready within ${MAX_SERVICE_WAIT} seconds"
+          echo "Container is running but services may still be starting"
         fi
+        
+        echo "INFO: Container startup process completed"
         
         end_time=$(date +%s)
         start_duration=$((end_time - start_time))
