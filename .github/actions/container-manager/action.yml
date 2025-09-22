@@ -451,26 +451,31 @@ runs:
         EOF
 
     - name: Execute command in container
-      if: inputs.action == 'exec'
+      if: inputs.action == 'exec' && inputs.command != ''
       shell: bash
       run: |
-        if [ -z "${{ inputs.command }}" ]; then
-          echo "ERROR: Command is required for exec action"
-          exit 1
-        fi
-        
         echo "INFO: Executing command in container ${{ inputs.service-name }}..."
         echo "User: ${{ inputs.user }}"
         echo "Working directory: ${{ inputs.working-dir }}"
         
         # For multi-line commands, use heredoc to preserve formatting and syntax
-        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T \
+        if ! $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T \
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \
           bash <<EXEC_EOF
         ${{ inputs.command }}
         EXEC_EOF
+        then
+          echo "ERROR: Command execution failed"
+          echo "Container status:"
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps || true
+          echo "Container logs:"
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs --tail=50 "${{ inputs.service-name }}" || true
+          exit 1
+        fi
+        
+        echo "SUCCESS: Command executed successfully"
 
     - name: Calculate operation time
       shell: bash
