@@ -208,7 +208,7 @@ jobs:
           compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
           service-name: backend
           user: rapids
-          working-dir: ${{ env.DOCKER_WRITEABLE_DIR }}
+          working-dir: /home/rapids
           notebook-input: ${{ env.NOTEBOOK_RELATIVED_DIR }}/${{ steps.set_global_vars.outputs.notebook_filename }}
           notebook-output: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK }}
           timeout-minutes: 30
