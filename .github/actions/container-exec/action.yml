@@ -265,9 +265,9 @@ runs:
             set -euxo pipefail
             export PYTHONUNBUFFERED=1
             
-            # Ensure Python paths include user packages
-            export PATH=\"\$HOME/.local/bin:\$PATH\"
-            export PYTHONPATH=\"\$HOME/.local/lib/python3.12/site-packages:\$PYTHONPATH\"
+            # Reset PATH to container defaults and add user paths
+            export PATH=\"/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:\$HOME/.local/bin\"
+            export PYTHONPATH=\"\$HOME/.local/lib/python3.12/site-packages:/opt/conda/lib/python3.12/site-packages\"
             
             # Debug: Show Python environment
             echo 'Python environment debug info:'

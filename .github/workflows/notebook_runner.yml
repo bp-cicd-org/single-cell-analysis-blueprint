@@ -173,45 +173,25 @@ jobs:
           command: |
             echo 'Installing requirements'
             
-            # Ensure Python user path is in PATH and PYTHONPATH
-            export PATH="$HOME/.local/bin:$PATH"
-            export PYTHONPATH="$HOME/.local/lib/python3.12/site-packages:$PYTHONPATH"
+            # Reset PATH to container defaults and add user paths
+            export PATH="/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin"
+            export PYTHONPATH="$HOME/.local/lib/python3.12/site-packages:/opt/conda/lib/python3.12/site-packages"
             
             # Check current Python environment
             echo "Python version: $(python --version)"
             echo "Python executable: $(which python)"
             echo "Pip version: $(pip --version)"
             
-            # First, try to use system packages that were installed via EXTRA_PIP_PACKAGES
-            echo "Checking if system packages are already available..."
+            # Check if system packages are available (installed via EXTRA_PIP_PACKAGES)
+            echo "Checking system packages installed via EXTRA_PIP_PACKAGES..."
             python -c "import scanpy; print(f'scanpy version: {scanpy.__version__}')" 2>/dev/null && echo "✅ scanpy found in system" || echo "❌ scanpy not found in system"
             python -c "import rapids_singlecell; print(f'rapids_singlecell version: {rapids_singlecell.__version__}')" 2>/dev/null && echo "✅ rapids_singlecell found in system" || echo "❌ rapids_singlecell not found in system"
             
-            # Install additional requirements if needed
-            MAX_RETRIES=3
-            RETRY_DELAY=5
-            REQUIREMENTS_FILE="requirements.txt"
-
-            echo "Installing additional packages from requirements.txt..."
-            for ((i=1; i<=MAX_RETRIES; i++)); do
-                echo "Attempt #$i to install dependencies from: $REQUIREMENTS_FILE..."
-                if pip install --user --no-cache-dir -r "$REQUIREMENTS_FILE"; then
-                    echo "Dependencies installed successfully!"
-                    break
-                else
-                    echo "Dependency installation failed (exit code: $?)."
-                    if [ "$i" -lt "$MAX_RETRIES" ]; then
-                        echo "Retrying in $RETRY_DELAY seconds..."
-                        sleep "$RETRY_DELAY"
-                    else
-                        echo "Maximum retry attempts ($MAX_RETRIES) reached. Proceeding with subsequent commands."
-                    fi
-                fi
-            done
-
-            # Install essential tools without --user flag to ensure system availability
-            echo "Installing essential tools globally..."
-            pip install jupyter papermill pytest-html pytest-cov
+            # Install essential tools if not already available
+            echo "Installing additional tools..."
+            python -c "import jupyter" 2>/dev/null && echo "✅ jupyter available" || pip install jupyter
+            python -c "import papermill" 2>/dev/null && echo "✅ papermill available" || pip install papermill
+            python -c "import pytest" 2>/dev/null && echo "✅ pytest available" || pip install pytest-html pytest-cov
 
             echo 'Verifying final installations'
             echo "=== System packages ==="
