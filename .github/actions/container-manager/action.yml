@@ -286,12 +286,49 @@ runs:
       run: |
         echo "INFO: Preparing container environment for service ${{ inputs.service-name }}..."
         
+        # First verify container is running and accessible
+        echo "INFO: Verifying container accessibility..."
+        
+        MAX_RETRIES=5
+        RETRY_DELAY=3
+        
+        for i in $(seq 1 $MAX_RETRIES); do
+          echo "Attempt $i/$MAX_RETRIES: Testing container accessibility..."
+          
+          if $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" echo "Container is accessible" >/dev/null 2>&1; then
+            echo "SUCCESS: Container is accessible"
+            break
+          else
+            echo "WARNING: Container not accessible yet (attempt $i/$MAX_RETRIES)"
+            if [ $i -lt $MAX_RETRIES ]; then
+              echo "Waiting $RETRY_DELAY seconds before retry..."
+              sleep $RETRY_DELAY
+            else
+              echo "ERROR: Container is not accessible after $MAX_RETRIES attempts"
+              echo "Container status:"
+              $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" ps || true
+              echo "Container logs:"
+              $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs --tail=50 "${{ inputs.service-name }}" || true
+              exit 1
+            fi
+          fi
+        done
+        
         # Install system packages as root
-        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -u root "${{ inputs.service-name }}" bash -c '
+        echo "INFO: Installing system packages..."
+        if ! $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -u root "${{ inputs.service-name }}" bash -c '
+          set -ex
           apt-get update
           apt-get install -y libxml2-utils
           apt-get clean
-        '
+        '; then
+          echo "ERROR: Failed to install system packages"
+          echo "Container logs:"
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" logs --tail=100 "${{ inputs.service-name }}" || true
+          exit 1
+        fi
+        
+        echo "SUCCESS: System packages installed"
         
         # Setup user environment
         $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T "${{ inputs.service-name }}" bash <<'EOF'
