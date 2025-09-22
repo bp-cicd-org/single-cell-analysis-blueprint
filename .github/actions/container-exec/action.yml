@@ -278,10 +278,22 @@ runs:
             # Test critical imports before running papermill
             echo 'Testing critical imports...'
             echo 'Testing scanpy import...'
-            python -c \"import scanpy as sc; print(f'✅ scanpy {sc.__version__} available')\" || echo '❌ scanpy import failed'
+            if python -c \"import scanpy as sc; print(f'✅ scanpy {sc.__version__} available')\"; then
+                echo 'scanpy is available'
+            else
+                echo '❌ scanpy import failed, attempting to install...'
+                pip install --no-cache-dir scanpy==1.11.2 || echo 'Failed to install scanpy'
+                python -c \"import scanpy as sc; print(f'✅ scanpy {sc.__version__} now available')\" || echo '❌ scanpy still not available'
+            fi
             
             echo 'Testing rapids_singlecell import...'
-            python -c \"import rapids_singlecell as rsc; print(f'✅ rapids_singlecell {rsc.__version__} available')\" || echo '❌ rapids_singlecell import failed'
+            if python -c \"import rapids_singlecell as rsc; print(f'✅ rapids_singlecell {rsc.__version__} available')\"; then
+                echo 'rapids_singlecell is available'
+            else
+                echo '❌ rapids_singlecell import failed, attempting to install...'
+                pip install --no-cache-dir rapids-singlecell==0.12.6 || echo 'Failed to install rapids_singlecell'
+                python -c \"import rapids_singlecell as rsc; print(f'✅ rapids_singlecell {rsc.__version__} now available')\" || echo '❌ rapids_singlecell still not available'
+            fi
             
             echo 'Starting papermill execution...'
             $PAPERMILL_CMD 2>&1 | tee '${{ inputs.working-dir }}/${LOG_FILE}'

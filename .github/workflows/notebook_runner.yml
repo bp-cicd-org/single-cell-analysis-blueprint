@@ -184,8 +184,21 @@ jobs:
             
             # Check if system packages are available (installed via EXTRA_PIP_PACKAGES)
             echo "Checking system packages installed via EXTRA_PIP_PACKAGES..."
-            python -c "import scanpy; print(f'scanpy version: {scanpy.__version__}')" 2>/dev/null && echo "✅ scanpy found in system" || echo "❌ scanpy not found in system"
-            python -c "import rapids_singlecell; print(f'rapids_singlecell version: {rapids_singlecell.__version__}')" 2>/dev/null && echo "✅ rapids_singlecell found in system" || echo "❌ rapids_singlecell not found in system"
+            python -c "import scanpy; print(f'scanpy version: {scanpy.__version__}')" 2>/dev/null && SCANPY_FOUND=1 || SCANPY_FOUND=0
+            python -c "import rapids_singlecell; print(f'rapids_singlecell version: {rapids_singlecell.__version__}')" 2>/dev/null && RSC_FOUND=1 || RSC_FOUND=0
+            
+            if [ $SCANPY_FOUND -eq 1 ] && [ $RSC_FOUND -eq 1 ]; then
+                echo "✅ All required packages found in system environment"
+            else
+                echo "❌ Some packages missing, installing from requirements.txt..."
+                
+                # Force install requirements to ensure packages are available
+                pip install --no-cache-dir -r requirements.txt
+                
+                echo "Re-checking after installation..."
+                python -c "import scanpy; print(f'✅ scanpy {scanpy.__version__} available')" || echo "❌ scanpy still missing"
+                python -c "import rapids_singlecell; print(f'✅ rapids_singlecell {rapids_singlecell.__version__} available')" || echo "❌ rapids_singlecell still missing"
+            fi
             
             # Install essential tools if not already available
             echo "Installing additional tools..."
