@@ -135,250 +135,250 @@ jobs:
           runner-os: ${{ runner.os }}
           enable-debug: false
 
-      # - name: Start container
-      #   id: start-container
-      #   uses: ./.github/actions/container-manager
-      #   with:
-      #     action: start
-      #     compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-      #     service-name: backend
-      #     wait-timeout: 300
-      #     image-tag: ${{ env.DOCKER_IMG_TAG }}
-      #     host-path: ${{ github.workspace }}
-      #     enable-debug: false
+      - name: Start container
+        id: start-container
+        uses: ./.github/actions/container-manager
+        with:
+          action: start
+          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
+          service-name: backend
+          wait-timeout: 300
+          image-tag: ${{ env.DOCKER_IMG_TAG }}
+          host-path: ${{ github.workspace }}
+          enable-debug: false
 
-      # - name: Check container status and logs
-      #   uses: ./.github/actions/container-manager
-      #   with:
-      #     action: status
-      #     compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-      #     service-name: backend
-      #     log-lines: 200
+      - name: Check container status and logs
+        uses: ./.github/actions/container-manager
+        with:
+          action: status
+          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
+          service-name: backend
+          log-lines: 200
 
-      # - name: Prepare container environment
-      #   uses: ./.github/actions/container-manager
-      #   with:
-      #     action: prepare
-      #     compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-      #     service-name: backend
+      - name: Prepare container environment
+        uses: ./.github/actions/container-manager
+        with:
+          action: prepare
+          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
+          service-name: backend
 
-      # - name: Install Python dependencies
-      #   uses: ./.github/actions/container-manager
-      #   with:
-      #     action: exec
-      #     compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-      #     service-name: backend
-      #     user: rapids
-      #     working-dir: /home/rapids
-      #     command: |
-      #       echo 'Installing requirements'
-      #       MAX_RETRIES=3
-      #       RETRY_DELAY=5
-      #       REQUIREMENTS_FILE="requirements.txt"
+      - name: Install Python dependencies
+        uses: ./.github/actions/container-manager
+        with:
+          action: exec
+          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
+          service-name: backend
+          user: rapids
+          working-dir: /home/rapids
+          command: |
+            echo 'Installing requirements'
+            MAX_RETRIES=3
+            RETRY_DELAY=5
+            REQUIREMENTS_FILE="requirements.txt"
 
-      #       for ((i=1; i<=MAX_RETRIES; i++)); do
-      #           echo "Attempt #$i to install dependencies from: $REQUIREMENTS_FILE..."
-      #           if pip install --user --no-cache-dir -r "$REQUIREMENTS_FILE"; then
-      #               echo "Dependencies installed successfully!"
-      #               break
-      #           else
-      #               echo "Dependency installation failed (exit code: $?)."
-      #               if [ "$i" -lt "$MAX_RETRIES" ]; then
-      #                   echo "Retrying in $RETRY_DELAY seconds..."
-      #                   sleep "$RETRY_DELAY"
-      #               else
-      #                   echo "Maximum retry attempts ($MAX_RETRIES) reached. Proceeding with subsequent commands."
-      #               fi
-      #           fi
-      #       done
+            for ((i=1; i<=MAX_RETRIES; i++)); do
+                echo "Attempt #$i to install dependencies from: $REQUIREMENTS_FILE..."
+                if pip install --user --no-cache-dir -r "$REQUIREMENTS_FILE"; then
+                    echo "Dependencies installed successfully!"
+                    break
+                else
+                    echo "Dependency installation failed (exit code: $?)."
+                    if [ "$i" -lt "$MAX_RETRIES" ]; then
+                        echo "Retrying in $RETRY_DELAY seconds..."
+                        sleep "$RETRY_DELAY"
+                    else
+                        echo "Maximum retry attempts ($MAX_RETRIES) reached. Proceeding with subsequent commands."
+                    fi
+                fi
+            done
 
-      #       pip install jupyter papermill pytest-html pytest-cov
+            pip install jupyter papermill pytest-html pytest-cov
 
-      #       echo 'Verifying installations'
-      #       pip list
+            echo 'Verifying installations'
+            pip list
 
-      #       echo 'Verifying kernel'
-      #       jupyter kernelspec list
+            echo 'Verifying kernel'
+            jupyter kernelspec list
 
-      # - name: Run Jupyter Notebook
-      #   id: run-jupyter-notebook
-      #   uses: ./.github/actions/container-exec
-      #   with:
-      #     action: notebook
-      #     compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-      #     service-name: backend
-      #     user: rapids
-      #     working-dir: ${{ env.DOCKER_WRITEABLE_DIR }}
-      #     notebook-input: ${{ env.NOTEBOOK_RELATIVED_DIR }}/${{ steps.set_global_vars.outputs.notebook_filename }}
-      #     notebook-output: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK }}
-      #     timeout-minutes: 30
-      #     enable-debug: false
+      - name: Run Jupyter Notebook
+        id: run-jupyter-notebook
+        uses: ./.github/actions/container-exec
+        with:
+          action: notebook
+          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
+          service-name: backend
+          user: rapids
+          working-dir: ${{ env.DOCKER_WRITEABLE_DIR }}
+          notebook-input: ${{ env.NOTEBOOK_RELATIVED_DIR }}/${{ steps.set_global_vars.outputs.notebook_filename }}
+          notebook-output: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK }}
+          timeout-minutes: 30
+          enable-debug: false
 
-      # - name: Convert result to html format
-      #   id: generate-notebook-html
-      #   if: steps.run-jupyter-notebook.outcome == 'success'
-      #   uses: ./.github/actions/container-exec
-      #   with:
-      #     action: convert
-      #     compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-      #     service-name: backend
-      #     user: rapids
-      #     working-dir: ${{ env.DOCKER_WRITEABLE_DIR }}
-      #     notebook-input: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK }}
-      #     notebook-output: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}
-      #     output-format: html
-      #     timeout-minutes: 10
-      #     enable-debug: false
+      - name: Convert result to html format
+        id: generate-notebook-html
+        if: steps.run-jupyter-notebook.outcome == 'success'
+        uses: ./.github/actions/container-exec
+        with:
+          action: convert
+          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
+          service-name: backend
+          user: rapids
+          working-dir: ${{ env.DOCKER_WRITEABLE_DIR }}
+          notebook-input: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK }}
+          notebook-output: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}
+          output-format: html
+          timeout-minutes: 10
+          enable-debug: false
 
-      # - name: Run pytest with test image
-      #   id: run-pytest
-      #   run: |
-      #     set -euo pipefail
+      - name: Run pytest with test image
+        id: run-pytest
+        run: |
+          set -euo pipefail
           
-      #     # Prepare directories
-      #     mkdir -p ${{ env.ARTIFACT_DIR }}
-      #     NOTEBOOK_BASENAME="${{ steps.set_global_vars.outputs.notebook_basename }}"
+          # Prepare directories
+          mkdir -p ${{ env.ARTIFACT_DIR }}
+          NOTEBOOK_BASENAME="${{ steps.set_global_vars.outputs.notebook_basename }}"
           
-      #     echo "Running pytest using test image: ${{ env.TEST_IMAGE }}"
-      #     echo "Input notebook HTML: ${{ env.OUTPUT_NOTEBOOK_HTML }}"
-      #     echo "Notebook basename: $NOTEBOOK_BASENAME"
+          echo "Running pytest using test image: ${{ env.TEST_IMAGE }}"
+          echo "Input notebook HTML: ${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          echo "Notebook basename: $NOTEBOOK_BASENAME"
           
-      #     # Run pytest with the dedicated test image
-      #     docker run --rm \
-      #       -v "${{ github.workspace }}/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_NOTEBOOK_HTML }}":/app/input/${NOTEBOOK_BASENAME}.html \
-      #       -v "${{ github.workspace }}:/workspace" \
-      #       ${{ env.TEST_IMAGE }} \
-      #       pytest -m "single_cell" \
-      #         --disable-warnings \
-      #         --html=/workspace/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_PYTEST_REPORT_HTML }} \
-      #         --self-contained-html \
-      #         --junitxml=/workspace/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_PYTEST_RESULT_XML }} \
-      #         || echo "Pytest completed with exit code $?"
+          # Run pytest with the dedicated test image
+          docker run --rm \
+            -v "${{ github.workspace }}/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_NOTEBOOK_HTML }}":/app/input/${NOTEBOOK_BASENAME}.html \
+            -v "${{ github.workspace }}:/workspace" \
+            ${{ env.TEST_IMAGE }} \
+            pytest -m "single_cell" \
+              --disable-warnings \
+              --html=/workspace/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_PYTEST_REPORT_HTML }} \
+              --self-contained-html \
+              --junitxml=/workspace/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_PYTEST_RESULT_XML }} \
+              || echo "Pytest completed with exit code $?"
           
-      #     # Verify test outputs were created
-      #     echo "Checking test outputs:"
-      #     ls -la ${{ env.ARTIFACT_DIR }}/
+          # Verify test outputs were created
+          echo "Checking test outputs:"
+          ls -la ${{ env.ARTIFACT_DIR }}/
           
-      #     # Create a simple results summary
-      #     if [ -f "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_RESULT_XML }}" ]; then
-      #       echo "Test results XML found"
-      #       echo "test_results_available=true" >> $GITHUB_OUTPUT
-      #     else
-      #       echo "Test results XML not found"
-      #       echo "test_results_available=false" >> $GITHUB_OUTPUT
-      #     fi
+          # Create a simple results summary
+          if [ -f "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_RESULT_XML }}" ]; then
+            echo "Test results XML found"
+            echo "test_results_available=true" >> $GITHUB_OUTPUT
+          else
+            echo "Test results XML not found"
+            echo "test_results_available=false" >> $GITHUB_OUTPUT
+          fi
 
-      # - name: Process test results
-      #   id: process-test-results
-      #   if: steps.run-pytest.outputs.test_results_available == 'true'
-      #   run: |
-      #     set -euo pipefail
+      - name: Process test results
+        id: process-test-results
+        if: steps.run-pytest.outputs.test_results_available == 'true'
+        run: |
+          set -euo pipefail
           
-      #     XML_FILE="${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_RESULT_XML }}"
-      #     HTML_FILE="${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_REPORT_HTML }}"
+          XML_FILE="${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_RESULT_XML }}"
+          HTML_FILE="${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_REPORT_HTML }}"
           
-      #     if [ ! -f "$XML_FILE" ]; then
-      #       echo "ERROR: Test results XML file not found: $XML_FILE"
-      #       echo "Available files:"
-      #       ls -la ${{ env.ARTIFACT_DIR }}/
-      #       exit 1
-      #     fi
+          if [ ! -f "$XML_FILE" ]; then
+            echo "ERROR: Test results XML file not found: $XML_FILE"
+            echo "Available files:"
+            ls -la ${{ env.ARTIFACT_DIR }}/
+            exit 1
+          fi
           
-      #     echo "Processing test results from: $XML_FILE"
+          echo "Processing test results from: $XML_FILE"
           
-      #     # Extract test metrics using xmllint
-      #     parse_xml() {
-      #       local xpath="$1"
-      #       xmllint --xpath "$xpath" "$XML_FILE" 2>/dev/null || echo "0"
-      #     }
+          # Extract test metrics using xmllint
+          parse_xml() {
+            local xpath="$1"
+            xmllint --xpath "$xpath" "$XML_FILE" 2>/dev/null || echo "0"
+          }
           
-      #     passed=$(parse_xml 'count(//testcase[not(skipped) and not(failure) and not(error)])')
-      #     failures=$(parse_xml 'count(//testcase[failure])')
-      #     errors=$(parse_xml 'count(//testcase[error])')
-      #     skipped=$(parse_xml 'count(//testcase[skipped])')
+          passed=$(parse_xml 'count(//testcase[not(skipped) and not(failure) and not(error)])')
+          failures=$(parse_xml 'count(//testcase[failure])')
+          errors=$(parse_xml 'count(//testcase[error])')
+          skipped=$(parse_xml 'count(//testcase[skipped])')
           
-      #     echo "passed=$passed" >> $GITHUB_OUTPUT
-      #     echo "failed=$failures" >> $GITHUB_OUTPUT
-      #     echo "skipped=$skipped" >> $GITHUB_OUTPUT
-      #     echo "errors=$errors" >> $GITHUB_OUTPUT
-      #     echo "xfailed=0" >> $GITHUB_OUTPUT
-      #     echo "xpassed=0" >> $GITHUB_OUTPUT
+          echo "passed=$passed" >> $GITHUB_OUTPUT
+          echo "failed=$failures" >> $GITHUB_OUTPUT
+          echo "skipped=$skipped" >> $GITHUB_OUTPUT
+          echo "errors=$errors" >> $GITHUB_OUTPUT
+          echo "xfailed=0" >> $GITHUB_OUTPUT
+          echo "xpassed=0" >> $GITHUB_OUTPUT
           
-      #     # Create test results JSON
-      #     TEST_RESULTS_JSON=$(cat << EOF
-      #     {
-      #       "passed": $passed,
-      #       "failed": $failures,
-      #       "skipped": $skipped,
-      #       "errors": $errors,
-      #       "total": $((passed + failures + skipped + errors))
-      #     }
-      #     EOF
-      #     )
+          # Create test results JSON
+          TEST_RESULTS_JSON=$(cat << EOF
+          {
+            "passed": $passed,
+            "failed": $failures,
+            "skipped": $skipped,
+            "errors": $errors,
+            "total": $((passed + failures + skipped + errors))
+          }
+          EOF
+          )
           
-      #     echo "test_results_json<<EOF" >> $GITHUB_OUTPUT
-      #     echo "$TEST_RESULTS_JSON" >> $GITHUB_OUTPUT
-      #     echo "EOF" >> $GITHUB_OUTPUT
+          echo "test_results_json<<EOF" >> $GITHUB_OUTPUT
+          echo "$TEST_RESULTS_JSON" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
           
-      #     echo "### Test Results Summary" >> $GITHUB_STEP_SUMMARY
-      #     echo "- Passed: $passed" >> $GITHUB_STEP_SUMMARY
-      #     echo "- Failed: $failures" >> $GITHUB_STEP_SUMMARY
-      #     echo "- Errors: $errors" >> $GITHUB_STEP_SUMMARY
-      #     echo "- Skipped: $skipped" >> $GITHUB_STEP_SUMMARY
-      #     echo "- Total: $((passed + failures + skipped + errors))" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Passed: $passed" >> $GITHUB_STEP_SUMMARY
+          echo "- Failed: $failures" >> $GITHUB_STEP_SUMMARY
+          echo "- Errors: $errors" >> $GITHUB_STEP_SUMMARY
+          echo "- Skipped: $skipped" >> $GITHUB_STEP_SUMMARY
+          echo "- Total: $((passed + failures + skipped + errors))" >> $GITHUB_STEP_SUMMARY
 
-      # - name: Copy notebook HTML result from container
-      #   id: copy-notebook-html
-      #   if: steps.generate-notebook-html.outcome == 'success'
-      #   uses: ./.github/actions/container-exec
-      #   with:
-      #     action: copy-from
-      #     compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-      #     service-name: backend
-      #     source-path: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}
-      #     dest-path: ${{ env.ARTIFACT_DIR }}
+      - name: Copy notebook HTML result from container
+        id: copy-notebook-html
+        if: steps.generate-notebook-html.outcome == 'success'
+        uses: ./.github/actions/container-exec
+        with:
+          action: copy-from
+          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
+          service-name: backend
+          source-path: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}
+          dest-path: ${{ env.ARTIFACT_DIR }}
 
-      # - name: Generate result metadata
-      #   run: |
-      #     ARTIFACT_DIR="${{ env.ARTIFACT_DIR }}"
-      #     TEST_RESULTS='${{ steps.process-test-results.outputs.test_results_json }}'
-      #     if [ -z "$TEST_RESULTS" ]; then
-      #       TEST_RESULTS='{}'
-      #     fi
-      #     echo "$TEST_RESULTS" > "$ARTIFACT_DIR/${{ matrix.NOTEBOOK_FILENAME }}.json"
+      - name: Generate result metadata
+        run: |
+          ARTIFACT_DIR="${{ env.ARTIFACT_DIR }}"
+          TEST_RESULTS='${{ steps.process-test-results.outputs.test_results_json }}'
+          if [ -z "$TEST_RESULTS" ]; then
+            TEST_RESULTS='{}'
+          fi
+          echo "$TEST_RESULTS" > "$ARTIFACT_DIR/${{ matrix.NOTEBOOK_FILENAME }}.json"
 
-      #     mkdir -p "${{ github.workspace }}/json-results"
-      #     echo "$TEST_RESULTS" > "json-results/${{ matrix.NOTEBOOK_FILENAME }}.json"
+          mkdir -p "${{ github.workspace }}/json-results"
+          echo "$TEST_RESULTS" > "json-results/${{ matrix.NOTEBOOK_FILENAME }}.json"
 
-      #     echo "INFO: Contents of artifact directory:"
-      #     ls -al "$ARTIFACT_DIR"
-      #     echo "INFO: Contents of json-results directory:"
-      #     ls -al "${{ github.workspace }}/json-results"
+          echo "INFO: Contents of artifact directory:"
+          ls -al "$ARTIFACT_DIR"
+          echo "INFO: Contents of json-results directory:"
+          ls -al "${{ github.workspace }}/json-results"
 
-      # - name: Upload the result notebook as artifact
-      #   if: always() && (steps.copy-notebook-html.outcome == 'success' || steps.run-pytest.outcome == 'success')
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: ${{ steps.set_global_vars.outputs.artifact_name }}
-      #     path: ${{ env.ARTIFACT_DIR }}/
-      #     retention-days: 30
-      #     if-no-files-found: warn
+      - name: Upload the result notebook as artifact
+        if: always() && (steps.copy-notebook-html.outcome == 'success' || steps.run-pytest.outcome == 'success')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.set_global_vars.outputs.artifact_name }}
+          path: ${{ env.ARTIFACT_DIR }}/
+          retention-days: 30
+          if-no-files-found: warn
 
-      # - name: Upload JSON test results
-      #   if: steps.process-test-results.outcome == 'success'
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: json-results-${{ matrix.NOTEBOOK_FILENAME }}
-      #     path: json-results/${{ matrix.NOTEBOOK_FILENAME }}.json
-      #     retention-days: 30
+      - name: Upload JSON test results
+        if: steps.process-test-results.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: json-results-${{ matrix.NOTEBOOK_FILENAME }}
+          path: json-results/${{ matrix.NOTEBOOK_FILENAME }}.json
+          retention-days: 30
 
-      # - name: Stop containers
-      #   if: ${{ always() }}
-      #   uses: ./.github/actions/container-manager
-      #   with:
-      #     action: stop
-      #     compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
-      #     service-name: backend
+      - name: Stop containers
+        if: ${{ always() }}
+        uses: ./.github/actions/container-manager
+        with:
+          action: stop
+          compose-file: ${{ env.DOCKER_COMPOSE_FILE }}
+          service-name: backend
 
       - name: Clean up
         if: always()
@@ -412,68 +412,68 @@ jobs:
           echo "Error: Cache not found after 3 attempts."
           exit 1
 
-      # - name: Download JSON test results
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     path: downloaded-results
+      - name: Download JSON test results
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-results
 
-      # - name: Generate final report
-      #   run: |
-      #     echo "### 📊 Notebook Test Results Summary" >> $GITHUB_STEP_SUMMARY
-      #     echo "| Notebook | ✅ Passed | ❌ Failed | ⏩ Skipped | 💥 Errors |" >> $GITHUB_STEP_SUMMARY
-      #     echo "|----------|----------|----------|-----------|----------|" >> $GITHUB_STEP_SUMMARY
+      - name: Generate final report
+        run: |
+          echo "### 📊 Notebook Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Notebook | ✅ Passed | ❌ Failed | ⏩ Skipped | 💥 Errors |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|----------|----------|-----------|----------|" >> $GITHUB_STEP_SUMMARY
 
-      #     notebooks=(
-      #       "01_scRNA_analysis_preprocessing.ipynb"
-      #       "02_scRNA_analysis_extended.ipynb"
-      #       "03_scRNA_analysis_with_pearson_residuals.ipynb"
-      #       "04_scRNA_analysis_dask_out_of_core.ipynb"
-      #       "05_scRNA_analysis_multi_GPU.ipynb"
-      #       "06_scRNA_analysis_90k_brain_example.ipynb"
-      #       "07_scRNA_analysis_1.3M_brain_example.ipynb"
-      #     )
+          notebooks=(
+            "01_scRNA_analysis_preprocessing.ipynb"
+            "02_scRNA_analysis_extended.ipynb"
+            "03_scRNA_analysis_with_pearson_residuals.ipynb"
+            "04_scRNA_analysis_dask_out_of_core.ipynb"
+            "05_scRNA_analysis_multi_GPU.ipynb"
+            "06_scRNA_analysis_90k_brain_example.ipynb"
+            "07_scRNA_analysis_1.3M_brain_example.ipynb"
+          )
 
-      #     total_passed=0
-      #     total_failed=0
-      #     total_skipped=0
-      #     total_errors=0
-      #     total_xfailed=0
-      #     total_xpassed=0
+          total_passed=0
+          total_failed=0
+          total_skipped=0
+          total_errors=0
+          total_xfailed=0
+          total_xpassed=0
 
-      #     for notebook in "${notebooks[@]}"; do
-      #       nb_name=$(basename "$notebook")
-      #       json_file="downloaded-results/json-results-${notebook}/$notebook.json"
+          for notebook in "${notebooks[@]}"; do
+            nb_name=$(basename "$notebook")
+            json_file="downloaded-results/json-results-${notebook}/$notebook.json"
 
-      #       if [ -f "$json_file" ]; then
-      #         results=$(cat "$json_file")
+            if [ -f "$json_file" ]; then
+              results=$(cat "$json_file")
 
-      #         # Extract test results to avoid complex nesting
-      #         passed=$(echo "$results" | jq -r '.passed')
-      #         failed=$(echo "$results" | jq -r '.failed')
-      #         skipped=$(echo "$results" | jq -r '.skipped')
-      #         errors=$(echo "$results" | jq -r '.errors')
-      #         xfailed=$(echo "$results" | jq -r '.xfailed')
-      #         xpassed=$(echo "$results" | jq -r '.xpassed')
+              # Extract test results to avoid complex nesting
+              passed=$(echo "$results" | jq -r '.passed')
+              failed=$(echo "$results" | jq -r '.failed')
+              skipped=$(echo "$results" | jq -r '.skipped')
+              errors=$(echo "$results" | jq -r '.errors')
+              xfailed=$(echo "$results" | jq -r '.xfailed')
+              xpassed=$(echo "$results" | jq -r '.xpassed')
               
-      #         # Update totals
-      #         total_passed=$((total_passed + passed))
-      #         total_failed=$((total_failed + failed))
-      #         total_skipped=$((total_skipped + skipped))
-      #         total_errors=$((total_errors + errors))
-      #         total_xfailed=$((total_xfailed + xfailed))
-      #         total_xpassed=$((total_xpassed + xpassed))
+              # Update totals
+              total_passed=$((total_passed + passed))
+              total_failed=$((total_failed + failed))
+              total_skipped=$((total_skipped + skipped))
+              total_errors=$((total_errors + errors))
+              total_xfailed=$((total_xfailed + xfailed))
+              total_xpassed=$((total_xpassed + xpassed))
 
-      #         echo "| $nb_name | $passed | $failed | $skipped | $errors |" >> $GITHUB_STEP_SUMMARY
-      #       else
-      #         echo "| $nb_name | ❌ Missing data | ❌ Missing data | ❌ Missing data | ❌ Missing data |" >> $GITHUB_STEP_SUMMARY
-      #       fi
-      #     done
+              echo "| $nb_name | $passed | $failed | $skipped | $errors |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| $nb_name | ❌ Missing data | ❌ Missing data | ❌ Missing data | ❌ Missing data |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
 
-      #     echo "| **Total** | **$total_passed** | **$total_failed** | **$total_skipped** | **$total_errors** |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total** | **$total_passed** | **$total_failed** | **$total_skipped** | **$total_errors** |" >> $GITHUB_STEP_SUMMARY
 
-      #     echo "" >> $GITHUB_STEP_SUMMARY
-      #     echo "### 📌 Additional Metrics" >> $GITHUB_STEP_SUMMARY
-      #     echo "- 🔶 Expected Failures (XFailed): $total_xfailed" >> $GITHUB_STEP_SUMMARY
-      #     echo "- ⚠️ Unexpected Passes (XPassed): $total_xpassed" >> $GITHUB_STEP_SUMMARY
-      #     echo "" >> $GITHUB_STEP_SUMMARY
-      #     echo "📊 [View Detailed Artifacts]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📌 Additional Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔶 Expected Failures (XFailed): $total_xfailed" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚠️ Unexpected Passes (XPassed): $total_xpassed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📊 [View Detailed Artifacts]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)" >> $GITHUB_STEP_SUMMARY
