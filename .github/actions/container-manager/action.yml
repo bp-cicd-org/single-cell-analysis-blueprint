@@ -460,15 +460,17 @@ runs:
         fi
         
         echo "INFO: Executing command in container ${{ inputs.service-name }}..."
-        echo "Command: ${{ inputs.command }}"
         echo "User: ${{ inputs.user }}"
         echo "Working directory: ${{ inputs.working-dir }}"
         
-        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec \
+        # For multi-line commands, use heredoc to preserve formatting and syntax
+        $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T \
           -u "${{ inputs.user }}" \
           -w "${{ inputs.working-dir }}" \
           "${{ inputs.service-name }}" \
-          bash -c "${{ inputs.command }}"
+          bash <<'EXEC_EOF'
+${{ inputs.command }}
+EXEC_EOF
 
     - name: Calculate operation time
       shell: bash
