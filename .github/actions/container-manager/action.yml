@@ -412,7 +412,7 @@ runs:
         
         # Install system packages as root
         echo "INFO: Installing system packages..."
-        if ! $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -u root "${{ inputs.service-name }}" bash -c '
+        if ! $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ inputs.compose-file }}" exec -T -u root "${{ inputs.service-name }}" bash -c '
           set -ex
           apt-get update
           apt-get install -y libxml2-utils
