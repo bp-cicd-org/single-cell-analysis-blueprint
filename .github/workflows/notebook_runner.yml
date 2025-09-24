@@ -252,8 +252,38 @@ jobs:
           timeout-minutes: 10
           enable-debug: false
 
+      - name: Copy notebook HTML result from container
+        id: copy-notebook-html
+        if: steps.generate-notebook-html.outcome == 'success'
+        run: |
+          # Ensure artifact directory exists
+          mkdir -p ${{ env.ARTIFACT_DIR }}
+          
+          echo "INFO: Copying HTML notebook from container..."
+          echo "Source: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          echo "Destination: ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          
+          # Copy the HTML file from container to host
+          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ env.DOCKER_COMPOSE_FILE }}" cp \
+            "backend:${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" \
+            "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          
+          echo "SUCCESS: HTML notebook copied successfully"
+          
+          # Verify the file was copied
+          if [ -f "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" ]; then
+            echo "✅ File exists: ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+            ls -la "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          else
+            echo "❌ File not found: ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+            echo "Contents of artifact directory:"
+            ls -la "${{ env.ARTIFACT_DIR }}/"
+            exit 1
+          fi
+
       - name: Run pytest with test image
         id: run-pytest
+        if: steps.copy-notebook-html.outcome == 'success'
         run: |
           set -euo pipefail
           
@@ -265,29 +295,25 @@ jobs:
           echo "Input notebook HTML: ${{ env.OUTPUT_NOTEBOOK_HTML }}"
           echo "Notebook basename: $NOTEBOOK_BASENAME"
           
-          # Create single_cell_analysis directory structure expected by tests
-          mkdir -p "${{ env.ARTIFACT_DIR }}/single_cell_analysis"
-          
-          # Copy HTML file to expected location
-          if [ -f "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" ]; then
-            cp "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" "${{ env.ARTIFACT_DIR }}/single_cell_analysis/${NOTEBOOK_BASENAME}.html"
-            echo "HTML file copied to single_cell_analysis directory"
-          else
-            echo "WARNING: HTML file not found at ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
+          # Verify HTML file exists before mounting
+          if [ ! -f "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" ]; then
+            echo "ERROR: HTML file not found at ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
             echo "Available files in artifact directory:"
             ls -la "${{ env.ARTIFACT_DIR }}/"
+            exit 1
           fi
           
           # Run pytest with the dedicated test image
+          # Mount the HTML file directly to the expected location in the container
           docker run --rm \
-            -v "${{ env.ARTIFACT_DIR }}/single_cell_analysis":/app/input/single_cell_analysis \
+            -v "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}":/app/input/single_cell_analysis/${NOTEBOOK_BASENAME}.html \
             -v "${{ github.workspace }}:/workspace" \
             ${{ env.TEST_IMAGE }} \
             pytest -m "single_cell and notebook" \
               --disable-warnings \
-              --html=/workspace/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_PYTEST_REPORT_HTML }} \
+              --html=/workspace/${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_REPORT_HTML }} \
               --self-contained-html \
-              --junitxml=/workspace/test-results/${{ matrix.NOTEBOOK_FILENAME }}/${{ env.OUTPUT_PYTEST_RESULT_XML }} \
+              --junitxml=/workspace/${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_PYTEST_RESULT_XML }} \
               || echo "Pytest completed with exit code $?"
           
           # Verify test outputs were created
@@ -361,35 +387,6 @@ jobs:
           echo "- Errors: $errors" >> $GITHUB_STEP_SUMMARY
           echo "- Skipped: $skipped" >> $GITHUB_STEP_SUMMARY
           echo "- Total: $((passed + failures + skipped + errors))" >> $GITHUB_STEP_SUMMARY
-
-      - name: Copy notebook HTML result from container
-        id: copy-notebook-html
-        if: steps.generate-notebook-html.outcome == 'success'
-        run: |
-          # Ensure artifact directory exists
-          mkdir -p ${{ env.ARTIFACT_DIR }}
-          
-          echo "INFO: Copying HTML notebook from container..."
-          echo "Source: ${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
-          echo "Destination: ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
-          
-          # Copy the HTML file from container to host
-          $COMPOSE_CMD $COMPOSE_FILE_FLAG "${{ env.DOCKER_COMPOSE_FILE }}" cp \
-            "backend:${{ env.DOCKER_WRITEABLE_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" \
-            "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
-          
-          echo "SUCCESS: HTML notebook copied successfully"
-          
-          # Verify the file was copied
-          if [ -f "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}" ]; then
-            echo "✅ File exists: ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
-            ls -la "${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
-          else
-            echo "❌ File not found: ${{ env.ARTIFACT_DIR }}/${{ env.OUTPUT_NOTEBOOK_HTML }}"
-            echo "Contents of artifact directory:"
-            ls -la "${{ env.ARTIFACT_DIR }}/"
-            exit 1
-          fi
 
       - name: Generate result metadata
         run: |
