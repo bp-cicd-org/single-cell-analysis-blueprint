@@ -30,13 +30,13 @@ concurrency:
 
 jobs:
   run-notebook:
-    runs-on: arc-runner-set-oke-org-nv-ai-bp
+    runs-on: arc-runner-set-oke-org-poc-1.34-4-gpu
     environment: dev
     strategy:
       matrix:
         NOTEBOOK_FILENAME: [
             "01_scRNA_analysis_preprocessing.ipynb",
-            "02_scRNA_analysis_extended.ipynb",
+            # "02_scRNA_analysis_extended.ipynb",
             "03_scRNA_analysis_with_pearson_residuals.ipynb",
             "04_scRNA_analysis_dask_out_of_core.ipynb",
             "05_scRNA_analysis_multi_GPU.ipynb",
