@@ -134,7 +134,7 @@ jobs:
           # Get System Info
           echo "===================== System Info ====================="
           more /etc/os-release
-          nvidia-smi
+          # nvidia-smi
           docker version
           docker compose version
 
