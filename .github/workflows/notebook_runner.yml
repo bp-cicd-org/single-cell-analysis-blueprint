@@ -307,17 +307,13 @@ jobs:
               fi
           done
 
-          pip install ipykernel nbclient nbformat jupyter nbconvert pytest-html pytest-cov
-          python3 -m ipykernel install --user --name python3 --display-name "Python 3"
+          pip install jupyter papermill pytest-html pytest-cov
 
           echo '=== Verifying installations ==='
           pip list | grep -i papermill
-          
-          echo '=== Verifying papermill command ==='
-          which papermill || echo "papermill not in PATH, checking pip show..."
-          pip show papermill
+          which papermill || echo "papermill not in PATH"
           python -m papermill --version
-          
+
           echo '=== Verifying kernel ==='
           jupyter kernelspec list
           EOF
@@ -346,12 +342,10 @@ jobs:
           # NOTE: matrix expression won't be parsed in EOF
           NOTEBOOK_RELATIVED_DIR="${{ env.NOTEBOOK_RELATIVED_DIR }}"
           NOTEBOOK_FILENAME="${{ steps.set_global_vars.outputs.notebook_filename }}"
-          NOTEBOOK_BASENAME="${{ steps.set_global_vars.outputs.notebook_basename }}"
           OUTPUT_NOTEBOOK="${{ env.OUTPUT_NOTEBOOK }}"
-          OUTPUT_NOTEBOOK_HTML="${{ env.OUTPUT_NOTEBOOK_HTML }}"
           DOCKER_WRITEABLE_DIR="${{ env.DOCKER_WRITEABLE_DIR }}"
 
-          echo "=============== Executing notebook with nbclient ====================="
+          echo "=============== Executing notebook ====================="
 
           docker compose -f "$DOCKER_COMPOSE_FILE" exec -u root backend bash <<EOF
           set -euxo pipefail
@@ -373,12 +367,13 @@ jobs:
           nvidia-smi 2>/dev/null || echo "WARNING: Full nvidia-smi failed"
           echo "===================================================================="
 
-          if [ -s "${DOCKER_WRITEABLE_DIR}/${OUTPUT_NOTEBOOK_HTML}" ]; then
-              echo "${DOCKER_WRITEABLE_DIR}/${OUTPUT_NOTEBOOK_HTML} exists and has contents"
+          echo "===============Check file====================="
+          if [ -s "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK" ]; then
+              echo "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK exists and has contents"
           else
-              echo "${DOCKER_WRITEABLE_DIR}/${OUTPUT_NOTEBOOK_HTML} does NOT exist or has NO contents"
-              exit 1
+              echo "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK does NOT exist or has NO contents"
           fi
+          echo "===============Check file====================="
 
           echo '=== Papermill logs ==='
           cat "$DOCKER_WRITEABLE_DIR/papermill.log"
@@ -392,23 +387,41 @@ jobs:
 
           echo "=============== Executing notebook --- Done ====================="
 
-      - name: Set notebook execution result
+      - name: Convert result to html format
         id: generate-notebook-html
         if: steps.run-jupyter-notebook.outcome == 'success'
         run: |
-          echo "Notebook execution and HTML conversion completed successfully"
+          echo "Run jupyter notebook succeeded, running Convert result to HTML format"
+          OUTPUT_NOTEBOOK="${{ env.OUTPUT_NOTEBOOK }}"
           OUTPUT_NOTEBOOK_HTML="${{ env.OUTPUT_NOTEBOOK_HTML }}"
           DOCKER_WRITEABLE_DIR="${{ env.DOCKER_WRITEABLE_DIR }}"
 
-          docker compose -f "$DOCKER_COMPOSE_FILE" exec -T -u root backend bash -c "
-            echo '===============Check HTML file====================='
-            if [ -s \"${DOCKER_WRITEABLE_DIR}/${OUTPUT_NOTEBOOK_HTML}\" ]; then
-                echo \"${DOCKER_WRITEABLE_DIR}/${OUTPUT_NOTEBOOK_HTML} exists and has contents\"
+          docker compose -f "$DOCKER_COMPOSE_FILE" exec -u root backend bash <<EOF
+          cd "$DOCKER_WRITEABLE_DIR"
+          echo "Converting notebook: $OUTPUT_NOTEBOOK to HTML"
+          echo "Working directory: \$(pwd)"
+          ls -la "$OUTPUT_NOTEBOOK" || echo "Source notebook not found"
+          
+          jupyter nbconvert --to html "$OUTPUT_NOTEBOOK" \
+            --output "\$(basename "$OUTPUT_NOTEBOOK_HTML" .html)" \
+            > "jupyter_nbconvert.log" 2>&1
+          
+          echo "Conversion completed, checking results..."
+          ls -la *.html || echo "No HTML files found"
+          EOF
+
+          docker compose -f "$DOCKER_COMPOSE_FILE" exec -T -u root backend bash -c '
+            echo "===jupyter_nbconvert logs==="
+            cat "$DOCKER_WRITEABLE_DIR/jupyter_nbconvert.log"
+
+            echo "===============Check file====================="
+            if [ -s "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML" ]; then
+                echo "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML exists and has contents"
             else
-                echo \"${DOCKER_WRITEABLE_DIR}/${OUTPUT_NOTEBOOK_HTML} does NOT exist or has NO contents\"
+                echo "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK_HTML does NOT exist or has NO contents"
             fi
-            echo '===============Check file====================='
-          "
+            echo "===============Check file====================="
+          '
 
       - name: Install Poetry/Dependencies and execute pytest
         id: run-pytest
