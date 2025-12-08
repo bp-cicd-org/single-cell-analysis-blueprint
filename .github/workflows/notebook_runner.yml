@@ -311,8 +311,13 @@ jobs:
           python3 -m ipykernel install --user --name python3 --display-name "Python 3"
 
           echo '=== Verifying installations ==='
-          pip list
-
+          pip list | grep -i papermill
+          
+          echo '=== Verifying papermill command ==='
+          which papermill || echo "papermill not in PATH, checking pip show..."
+          pip show papermill
+          python -m papermill --version
+          
           echo '=== Verifying kernel ==='
           jupyter kernelspec list
           EOF
@@ -356,7 +361,7 @@ jobs:
           nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu --format=csv
           echo "===================================================================="
 
-          papermill "${NOTEBOOK_RELATIVED_DIR}/${NOTEBOOK_FILENAME}" "${DOCKER_WRITEABLE_DIR}/${OUTPUT_NOTEBOOK}" \
+          python -m papermill "${NOTEBOOK_RELATIVED_DIR}/${NOTEBOOK_FILENAME}" "${DOCKER_WRITEABLE_DIR}/${OUTPUT_NOTEBOOK}" \
             --log-output \
             --log-level DEBUG \
             --progress-bar \
