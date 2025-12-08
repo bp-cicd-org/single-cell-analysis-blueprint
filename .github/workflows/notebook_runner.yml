@@ -316,6 +316,23 @@ jobs:
           jupyter kernelspec list
           EOF
 
+      - name: Check GPU status before notebook execution
+        run: |
+          echo "=============== GPU Status Before Notebook Execution ==============="
+          docker compose -f "$DOCKER_COMPOSE_FILE" exec -T -u root backend bash -c '
+            echo "=== nvidia-smi ==="
+            nvidia-smi
+            
+            echo ""
+            echo "=== GPU Memory Summary ==="
+            nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory --format=csv
+            
+            echo ""
+            echo "=== GPU Processes ==="
+            nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv 2>/dev/null || echo "No GPU processes running"
+          '
+          echo "===================================================================="
+
       - name: Run Jupyter Notebook
         id: run-jupyter-notebook
         timeout-minutes: 30
@@ -332,12 +349,21 @@ jobs:
           set -euxo pipefail
           export PYTHONUNBUFFERED=1
 
+          echo "=============== GPU Status BEFORE Notebook Execution ==============="
+          nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu --format=csv
+          echo "===================================================================="
+
           papermill "${NOTEBOOK_RELATIVED_DIR}/${NOTEBOOK_FILENAME}" "${DOCKER_WRITEABLE_DIR}/${OUTPUT_NOTEBOOK}" \
             --log-output \
             --log-level DEBUG \
             --progress-bar \
             --report-mode \
-            --kernel python3 2>&1 | tee "${DOCKER_WRITEABLE_DIR}/papermill.log"
+            --kernel python3 2>&1 | tee "${DOCKER_WRITEABLE_DIR}/papermill.log" || PAPERMILL_EXIT_CODE=\$?
+
+          echo "=============== GPU Status AFTER Notebook Execution ==============="
+          nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu --format=csv 2>/dev/null || echo "WARNING: nvidia-smi failed - GPU may be in bad state"
+          nvidia-smi 2>/dev/null || echo "WARNING: Full nvidia-smi failed"
+          echo "===================================================================="
 
           echo "===============Check file====================="
           if [ -s "$DOCKER_WRITEABLE_DIR/$OUTPUT_NOTEBOOK" ]; then
@@ -349,6 +375,12 @@ jobs:
 
           echo '=== Papermill logs ==='
           cat "$DOCKER_WRITEABLE_DIR/papermill.log"
+          
+          # Exit with papermill's exit code if it failed
+          if [ -n "\${PAPERMILL_EXIT_CODE:-}" ]; then
+            echo "Papermill failed with exit code: \$PAPERMILL_EXIT_CODE"
+            exit \$PAPERMILL_EXIT_CODE
+          fi
           EOF
 
           echo "=============== Executing notebook --- Done ====================="
